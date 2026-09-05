@@ -1,0 +1,20 @@
+# Stage 00 - base environment, pinned versions, installed into one venv at project root.
+# Later stages (02, 04, 06...) each have their own requirements.txt added on top of this,
+# into the same venv - see README.md in this folder for the workflow.
+#
+# To bump a version later: edit the number here explicitly and re-run pip install -r,
+# so everyone running the project ends up with the same version.
+
+opencv-python==4.9.0.80
+sounddevice==0.4.6
+numpy==1.26.4
+pyyaml==6.0.1
+
+
+# from project root or the stage01 folder run :
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+
+
+# to install the required torch version before running the stage01 requirements.txt file. ( run from the main directory )
+# pip install -r stages\stage01_presence_detection\requirements.txt

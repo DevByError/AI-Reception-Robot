@@ -1,0 +1,19 @@
+# Stage 06 - real text-to-speech via Piper (local neural TTS, embeds espeak-ng for
+# phonemization - no separate install needed for that part).
+#
+# sounddevice is already installed from stage00's requirements.txt (same venv).
+#
+# LICENSING: Piper itself (OHF-Voice/piper1-gpl) is GPL-3.0-or-later - stronger copyleft than
+# ultralytics' AGPL-3.0 (see stage01's own licensing note). Fine for prototyping/internal use,
+# but if this robot ships as closed-source software to the university, this needs legal review
+# before production - GPL generally requires derivative/linked works to also be GPL if
+# distributed. Voice MODELS have their own separate licenses too (see each voice's MODEL_CARD at
+# huggingface.co/rhasspy/piper-voices) - most are permissive but check before shipping.
+
+piper-tts==1.6.0
+
+# evaluate_clarity.py also needs stage04's faster-whisper + jiwer (not re-pinned here - install
+# stage04's requirements.txt too if you haven't already, same shared venv).
+
+# download the voice model (female, US English - see tts_speaker_live.py's VOICE_NAME):
+# python -m piper.download_voices en_US-amy-medium 

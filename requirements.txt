@@ -1,0 +1,82 @@
+# LUC-Robot - every runtime dependency of every stage, in one file.
+#
+# This is the "install it all at once" path, for a fresh clone or the kiosk device:
+#
+#     pip install -r requirements.txt
+#
+# The per-stage files (stages/stageNN_.../requirements.txt) are still the source of truth for
+# WHY each pin exists - each one carries the licensing note, the wheel-availability reason, or
+# the version-conflict history behind its choice. Read those before changing a number here.
+# They also remain the incremental path: while building stage by stage you install only the
+# stage you've reached, and you don't pull ~2GB of torch on day one just to run stage00's
+# hardware check.
+#
+# Keep the two in sync: a pin added to a stage file belongs here too.
+#
+# READ FIRST - two things this file cannot express on its own:
+#
+#   1. opencv. Stage 00 pins opencv-python and Stage 02 needs opencv-contrib-python, which is a
+#      strict SUPERSET of it. Installing both into one environment makes them fight over the
+#      same files, so only the contrib build is listed below. ultralytics (Stage 01) declares
+#      opencv-python as its own dependency and pip will therefore pull it back in anyway - see
+#      INSTALL.md, "The opencv wrinkle", for the one uninstall that cleans that up and why the
+#      `pip check` warning it leaves behind is harmless.
+#
+#   2. Three things are not pip packages at all and are NOT installed by this file:
+#        - Ollama          (the local fallback LLM - see INSTALL.md step 6)
+#        - MySQL           (persistent memory for faces + transcripts - INSTALL.md step 5)
+#        - model weights   (YOLOv8n, YuNet, SFace, Piper voice, Whisper - INSTALL.md step 4).
+#          They're gitignored on purpose: ~170MB of binaries that each have a one-line
+#          re-download command.
+
+# torch comes from PyTorch's CPU wheel index rather than PyPI, so a laptop without a matching
+# NVIDIA driver setup doesn't silently pull a multi-gigabyte CUDA build. On a real Jetson,
+# torch needs NVIDIA's own Jetson-specific build instead and this pin does not apply - install
+# everything else from this file with `--no-deps` for torch, or drop the torch line there.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- Stage 00: base environment ----------------------------------------------------------------
+sounddevice==0.4.6
+numpy==1.26.4
+pyyaml==6.0.1
+
+# --- Stage 01: person detection + tracking (ultralytics is AGPL-3.0) ----------------------------
+torch==2.12.0
+ultralytics==8.4.64
+lap==0.5.13
+
+# --- Stage 02: face detection/recognition, active speaker, persistent memory --------------------
+# opencv-contrib-python replaces (and includes) Stage 00's opencv-python - see note 1 above.
+opencv-contrib-python==4.9.0.80
+mediapipe==0.10.18
+mysql-connector-python==9.1.0
+
+# --- Stage 03: placeholder voice output (offline SAPI5 on Windows) ------------------------------
+pyttsx3==2.90
+pypiwin32==223 ; sys_platform == "win32"
+
+# --- Stage 04: speech-to-text -------------------------------------------------------------------
+faster-whisper==1.0.3
+webrtcvad-wheels==2.0.14
+noisereduce==3.0.2
+rapidfuzz==3.6.1
+jiwer==3.0.3
+resemblyzer==0.1.4
+scikit-learn==1.4.2
+
+# --- Stage 05: retrieval + answer generation ----------------------------------------------------
+sentence-transformers==3.3.1
+google-genai==2.18.1
+groq==0.11.0
+anthropic==0.122.0
+requests==2.32.3
+
+# --- Stage 06: text-to-speech (Piper is GPL-3.0-or-later) ---------------------------------------
+piper-tts==1.6.0
+
+# --- Stage 07: scraper + indexer ----------------------------------------------------------------
+beautifulsoup4==4.12.3
+
+# --- Stages 08 / 09 ------------------------------------------------------------------------------
+# No dependencies of their own: the orchestrator wires the stages above together, and the
+# deployment stage's logging_config.py is standard library only.

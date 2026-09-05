@@ -1,0 +1,76 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+stages/stage00_setup/requirements.lock.txt
+
+# Downloaded model weights - large binaries, not source. Re-fetched via download_models.py /
+# ultralytics auto-download / piper.download_voices, not committed to git.
+*.onnx
+*.onnx.json
+*.pt
+stages/stage01_presence_detection/yolov8n.pt
+
+# Knowledge-base cache: scraped lincoln.edu.my content plus its precomputed embeddings, written
+# by main_live.py so a normal launch doesn't re-scrape and re-embed ~14,800 chunks every time.
+# Derived data with a 24h expiry, not source - safe to delete, rebuilds itself on the next run
+# (or immediately with 'python stages\stage08_orchestrator\main_live.py --refresh').
+stages/stage08_orchestrator/kb_cache.npz
+stages/stage08_orchestrator/kb_cache.meta.json
+
+# The robot's own identity (name, creator) as last read from MySQL - stage05's identity.py
+# writes it after every successful read so the robot is still correctly named during a database
+# outage. Derived data, machine-specific, rebuilt on the next successful read; the real values
+# live in the `robot_identity` table.
+stages/stage05_nlu_dialogue/identity_cache.json
+
+# MySQL credentials for the robot's persistent memory (see .env.example, which IS committed).
+# Never commit a real password.
+.env
+
+# --- General hygiene ---------------------------------------------------------------------------
+# Alternative venv folder names, in case someone creates the environment with a different name
+# than the .venv this project's setup scripts use.
+venv/
+env/
+ENV/
+
+# Python build/packaging leftovers - none are produced today, but pip/setuptools create them the
+# moment anyone runs a build or an editable install.
+*.egg-info/
+.eggs/
+build/
+dist/
+*.so
+*.pyd
+
+# Test / type-checker caches.
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor and OS noise. .vscode/ and .idea/ hold machine-specific interpreter paths - useless to
+# anyone else who clones this and a constant source of pointless diffs.
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Runtime logs (Stage 09's logging_config.py, and anything piped to a file while debugging).
+*.log
+logs/
+
+# Hugging Face / faster-whisper / sentence-transformers model caches, if anyone points them at
+# the project folder instead of the default user-level cache with HF_HOME / TRANSFORMERS_CACHE.
+.cache/
+models_cache/
+
+# Local .env variants (.env.local, .env.production ...). The committed template is .env.example,
+# which is explicitly un-ignored on the last line so the negation below can't swallow it.
+.env.*
+!.env.example

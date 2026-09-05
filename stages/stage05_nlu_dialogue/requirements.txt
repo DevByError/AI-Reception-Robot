@@ -1,0 +1,45 @@
+# Stage 05 - real answer generation. Two backends supported by default (dialogue_manager_live.py
+# auto-picks whichever API key is set, Gemini first) - install whichever you're actually using,
+# or both. anthropic below is for ClaudeAnswerGenerator, kept working in the file but no longer
+# the default pick (see dialogue_manager_live.py) - only install it if you specifically want
+# Claude back.
+
+# knowledge_base.py - real semantic search (replaces word-overlap keyword matching). torch is
+# already installed from stage01's requirements.txt (same shared venv) - sentence-transformers
+# reuses it, no separate torch pin needed here. First run downloads the ~80MB model from Hugging
+# Face and caches it locally; every run after that is offline.
+sentence-transformers==3.3.1
+numpy==1.26.4  # matches the version ultralytics (stage01) already installs, avoids a conflict
+
+# Google's official Gen AI SDK (Gemini) - default LLM backend as of 2026-08-17. Free tier
+# available via Google AI Studio (aistudio.google.com), no payment method needed for an API key.
+google-genai==2.18.1
+
+# Official Groq SDK - thin wrapper around their (OpenAI-compatible) chat completions endpoint.
+# Free tier is an ongoing daily quota, no card needed. Secondary backend if GEMINI_API_KEY isn't
+# set - see _build_answer_generator() in dialogue_manager_live.py.
+groq==0.11.0
+
+# Anthropic's official SDK (Claude) - only needed if you switch ClaudeAnswerGenerator back on
+# (see dialogue_manager_live.py's module docstring). New accounts get a small one-time free
+# credit, but it needs a payment method added before the API will actually use it.
+#
+# Bumped from the original 0.39.0 pin to a current release (2026-08-17) - 0.39.0 required
+# httpx==0.27.2 (it passed a 'proxies' kwarg that httpx>=0.28 removed - see
+# github.com/anthropics/anthropic-sdk-python/issues/766), which directly conflicts with
+# google-genai==2.18.1 above (needs httpx>=0.28.1) - installing both pins in the same
+# environment is a real ResolutionImpossible error, not just a theoretical risk. Anthropic fixed
+# the httpx>=0.28 incompatibility in later releases, so a modern anthropic version and
+# google-genai can now share one environment with no separate httpx pin needed at all.
+anthropic==0.122.0
+
+# ollama_client.py - the local LLM + local embedding backend (see README.md, "Local LLM via
+# Ollama"). Ollama itself is a separate desktop/server install, NOT a pip package - the only
+# Python dependency is an HTTP client, and this is a plain requests call against a documented
+# REST endpoint. Deliberately not the official `ollama` package: it would add a pin to keep in
+# sync for two endpoints that are a handful of lines each.
+#
+# requests is already installed via stage07's requirements.txt (same shared venv); pinned here
+# too so this stage's dependency list is honest on its own rather than relying on another
+# stage's install having happened first.
+requests==2.32.3

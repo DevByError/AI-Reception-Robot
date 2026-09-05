@@ -1,0 +1,12 @@
+# Stage 03 (live) - adds a real (if temporary) voice output on top of stage01 + stage02's
+# already-installed requirements (YOLOv8n tracking, YuNet/SFace recognition).
+#
+# pyttsx3 is offline TTS (SAPI5 on Windows, no network/API key needed) - a stand-in for the real
+# Stage 06 engine, which doesn't exist yet. It's not streaming and not the final voice, purely
+# so this stage can be tested with real audio instead of console prints.
+
+pyttsx3==2.90
+
+# pyttsx3 needs pypiwin32 for the SAPI5 driver on Windows - usually pulled in automatically, but
+# pin it explicitly here in case it isn't on this machine:
+pypiwin32==223 ; sys_platform == "win32"

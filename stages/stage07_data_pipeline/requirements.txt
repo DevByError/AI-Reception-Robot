@@ -1,0 +1,6 @@
+# Stage 07 - real scraper (scraper.py). requests for HTTP, BeautifulSoup for HTML extraction.
+requests==2.32.3
+beautifulsoup4==4.12.3
+
+# indexer.py imports knowledge_base.py from stage05 directly (see sys.path.append at the top of
+# indexer.py) - install stage05_nlu_dialogue/requirements.txt too if you haven't already.

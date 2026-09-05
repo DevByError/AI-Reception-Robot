@@ -1,0 +1,39 @@
+# Stage 02 - real face detection + recognition.
+#
+# Uses OpenCV's built-in YuNet (face detection) + SFace (face recognition/embeddings) - both
+# Apache-2.0 licensed (verified against the LICENSE file in opencv/opencv_zoo, unlike
+# InsightFace's buffalo_l models which are non-commercial-only by default). No dlib/CMake
+# compiler toolchain needed either, unlike the more commonly-tutorialed `face_recognition`
+# package - these ship as prebuilt ONNX files loaded directly through cv2.
+#
+# IMPORTANT: opencv-contrib-python is a strict superset of opencv-python (installing both in
+# the same venv causes file conflicts). Run this first:
+#   pip uninstall opencv-python -y
+# before installing this file. See README.md in this folder for the full setup, including the
+# one-time model download.
+
+opencv-contrib-python==4.9.0.80
+
+# mouth_activity.py - active speaker detection (which of several visible people is the one
+# actually talking to the robot), using mediapipe's face mesh for precise lip landmarks. YuNet
+# above only provides 5 face landmarks, and just two of those are on the mouth (the corners),
+# which gives mouth WIDTH but no way to measure open/close - hence a second, landmark-dense model
+# rather than reusing the detector already loaded.
+#
+# Apache-2.0, so it fits alongside YuNet/SFace without adding a new licensing constraint (in
+# contrast to stage01's ultralytics/AGPL-3.0 and stage06's Piper/GPL-3.0 - see README.md).
+#
+# Pinned to a version that still ships the legacy `mp.solutions.face_mesh` API that
+# mouth_activity.py uses. Google has since introduced a newer Tasks API (FaceLandmarker) and
+# marked mp.solutions "legacy"; it still works, but if you upgrade past a release that removes
+# it, MouthActivityDetector.__init__ is the single place that needs porting.
+mediapipe==0.10.18
+
+# robot_db.py - persistent memory (enrolled faces + conversation transcripts) in MySQL, so the
+# robot still recognizes a student after being closed and reopened.
+#
+# Oracle's official driver, and pure Python - no compiler or MySQL client library needed on
+# Windows, and it speaks MySQL 8's default caching_sha2_password auth out of the box (PyMySQL
+# needs an extra cryptography dependency for that). MIT-compatible GPL-2.0-with-FOSS-exception,
+# same footing as stage06's Piper.
+mysql-connector-python==9.1.0

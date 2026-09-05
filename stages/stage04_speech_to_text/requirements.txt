@@ -1,0 +1,33 @@
+# Stage 04 - real streaming speech-to-text, full pipeline.
+#
+# sounddevice/numpy are already installed from stage00's requirements.txt (same venv). torch is
+# already installed from stage01's requirements.txt (CPU build) - resemblyzer below reuses it,
+# no second install.
+
+# Core ASR: CTranslate2-based local Whisper - much faster/lighter on CPU than the official
+# openai-whisper package, a better fit for the eventual Jetson/Mini PC target.
+faster-whisper==1.0.3
+
+# Streaming VAD: same webrtcvad API/import (`import webrtcvad`) as the original `webrtcvad`
+# package, but published with prebuilt wheels for Windows/macOS/Linux - the original has no
+# Windows wheels and needs a C compiler toolchain to build from source (same "avoid a compiler
+# toolchain" reasoning as stage02's opencv-contrib-python choice over dlib).
+webrtcvad-wheels==2.0.14
+
+# Noise suppression preprocessing (audio_preprocessing.py) - pure numpy/scipy spectral gating,
+# no compiler needed.
+noisereduce==3.0.2
+
+# Domain vocabulary correction (vocabulary_correction.py) - fast fuzzy string matching, prebuilt
+# wheels, no compiler needed.
+rapidfuzz==3.6.1
+
+# WER evaluation harness (evaluate_wer.py) - pure python.
+jiwer==3.0.3
+
+# Speaker diarization (diarization.py, opt-in - not used by the default single-speaker pipeline).
+# No account/gated-model download needed (unlike pyannote.audio, which needs a Hugging Face
+# account + accepting license terms + an HF_TOKEN) - consistent with this project's preference
+# for no-account dependencies.
+resemblyzer==0.1.4
+scikit-learn==1.4.2

@@ -1,0 +1,19 @@
+# Stage 01 - real person detection + tracking (replaces the Stage 00 mock).
+#
+# NOTE ON LICENSING: ultralytics is AGPL-3.0. Fine for prototyping/internal use, but if this
+# robot ships as closed-source software to the university later, you'll need either an
+# Ultralytics commercial license or to open-source the parts that use it. Revisit before
+# production deployment.
+#
+# torch is pulled from the PyTorch CPU wheel index (--extra-index-url below) instead of the
+# default PyPI index, to avoid pip grabbing a much larger CUDA-bundled build on a laptop
+# without a matching NVIDIA GPU/driver setup. On the real Jetson deployment device later,
+# torch needs NVIDIA's own Jetson-specific build instead - this pin does not apply there.
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.12.0
+
+ultralytics==8.4.64
+
+lap==0.5.13  # required by ByteTrack (model.track()) - ultralytics auto-installs this if missing,
+
