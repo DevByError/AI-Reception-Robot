@@ -238,12 +238,24 @@ class UniversityScraper:
                 all_urls.append(link)
         return all_urls
 
-    def scrape_once(self, urls: list[str] | None = None) -> list[ScrapedPage]:
+    def scrape_once(self, urls: list[str] | None = None,
+                    before_each_page=None) -> list[ScrapedPage]:
         """Returns every page (regardless of whether it changed) - filtering happens in
         detect_changes(). Pass urls explicitly (e.g. the output of discover_urls()) to scrape
-        more than just the seed list; defaults to the seed list alone."""
+        more than just the seed list; defaults to the seed list alone.
+
+        before_each_page: an optional callback invoked before each fetch. A full scrape is ~150
+        rate-limited pages and runs for about a minute, so a caller that shares a machine with
+        something latency-sensitive needs a way to get a word in partway through rather than
+        only before it starts. Stage 08 passes one that blocks while a visitor is being served -
+        scraping and parsing in the background is what starved its microphone callback and left
+        a visitor's question transcribing to nothing. Defaults to None, which is the original
+        uninterruptible behaviour.
+        """
         pages = []
         for url in urls if urls is not None else self.seed_urls:
+            if before_each_page is not None:
+                before_each_page()
             html = fetch_page(url)
             text = extract_text(html)
             pages.append(ScrapedPage(url=url, raw_text=text, content_hash=compute_hash(text)))

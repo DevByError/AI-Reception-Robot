@@ -174,7 +174,7 @@ if __name__ == "__main__":
     # directory when this script is launched from the project root.
     yolo = YOLO(str(STAGE01_DIR / "yolov8n.pt"))
     embedder = SFaceEmbedder()
-    store = FaceMemoryStore(is_match=embedder.is_match)
+    store = FaceMemoryStore(is_match=embedder.is_match, score=embedder.similarity)
 
     presence = PerTrackPresenceTracker()
     sm = GreetingStateMachine(ExpressionController(), LiveTTSSpeaker())

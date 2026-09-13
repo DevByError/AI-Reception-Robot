@@ -10,7 +10,8 @@ guardrails from day one, not as an afterthought.
    anything. A decline means no embedding is stored — that visit stays anonymous.
 2. **Minimum necessary data**: only store (the name as given by the student, the face embedding,
    first/last visit date, visit count). No raw images are kept after the embedding is extracted.
-   Conversation transcripts are also stored (see rule 7) — nothing else.
+   Conversation transcripts (rule 7) and a few short remembered facts (rule 8) are also stored —
+   nothing else.
 3. **Retention period**: any student's data is deleted automatically if they haven't visited the
    kiosk within a set period (e.g. one full semester) — an auto-expiry policy, not a manual one.
 4. **Right to be forgotten**: there must be a way (even a simple voice request like "forget me")
@@ -32,6 +33,30 @@ guardrails from day one, not as an afterthought.
 
    The kiosk notice (rule 6) must say that conversations are recorded, not only that there's a
    camera. This is the one part of this policy a student cannot infer from looking at the robot.
+8. **Remembered facts** (added 2026-09-05): at the end of a visit the robot extracts a handful of
+   short notes about the student — what they were asking about, anything worth knowing next time
+   — and stores them in `person_facts`, so a returning visitor can be greeted with "did you get
+   anywhere with the Master of Computer Science?" rather than only being identified.
+
+   These are **more sensitive than the face embeddings**, not less, and should be treated that
+   way in any review: an embedding is a meaningless vector without the model that produced it,
+   whereas these are readable English sentences about a named student. Four constraints, each
+   enforced in code rather than left to a caller:
+   - **Consent-gated by construction.** A fact can only be attached to a `person_id`, and a
+     visitor who declined to be remembered has none — so there is nowhere to put one. It is not
+     a check that can be forgotten.
+   - **Bounded categories.** The extraction prompt explicitly refuses health or disability,
+     religion, money problems, grades or exam results, immigration/visa status, anything about a
+     person other than the student, and anything they asked to have forgotten. See
+     `EXTRACTION_SYSTEM_PROMPT` in `stages/stage05_nlu_dialogue/visit_memory.py`.
+   - **Auditable.** Every fact records the conversation it came from (`source_conversation_id`),
+     so a student disputing something the robot "remembers" can be shown what was actually said.
+   - **Deleted with the person**, via the same `ON DELETE CASCADE` as everything else, so rules
+     3 and 4 cover them with no extra step. `delete_person_facts()` also exists for the narrower
+     request — "forget what you know about me, but I still want to be recognised".
+
+   A student asking what the robot remembers about them should be answered from `person_facts`,
+   not by reading their transcripts aloud. That is the whole point of the table.
 
 ## Before actual deployment (outside the scope of the code)
 
@@ -42,13 +67,12 @@ guardrails from day one, not as an afterthought.
 
 ## Where the data actually lives
 
-A MySQL database (default name `luc_robot`), five tables — `robot_identity`, `people`,
-`face_embeddings`, `conversations`, `utterances`. Only the last four hold anything about a
-visitor; `robot_identity` is the robot's own name and its creator's contact details, which is
-configuration rather than personal data collected from anybody. Schema and every statement that
-touches it are in
-`stages/stage02_face_recognition/robot_db.py`; connection settings come from a gitignored `.env`
-at the project root (`.env.example` is the template).
+A MySQL database (default name `luc_robot`), six tables — `robot_identity`, `people`,
+`face_embeddings`, `conversations`, `utterances`, `person_facts`. Only the last five hold
+anything about a visitor; `robot_identity` is the robot's own name and its creator's contact
+details, which is configuration rather than personal data collected from anybody. Schema and
+every statement that touches it are in `stages/stage02_face_recognition/robot_db.py`; connection
+settings come from a gitignored `.env` at the project root (`.env.example` is the template).
 
 Rule 5 (local storage) is a **deployment** requirement, and this is the file to check it
 against: point `LUC_DB_HOST` at a machine inside the university, not at a managed cloud
@@ -67,7 +91,18 @@ JOIN people p USING (person_id)
 WHERE p.name = 'Ahmad'
 ORDER BY c.started_at DESC, u.turn_index;
 
--- right to be forgotten: takes their embeddings and transcripts with it (ON DELETE CASCADE)
+-- what the robot REMEMBERS about them, as opposed to what was said - answer a
+-- "what do you know about me" request from this, not from the transcripts above
+SELECT f.created_at, f.fact, f.source_conversation_id
+FROM person_facts f JOIN people p USING (person_id)
+WHERE p.name = 'Ahmad'
+ORDER BY f.created_at DESC;
+
+-- the narrower request: forget what you know about me, but keep recognising me
+DELETE FROM person_facts WHERE person_id = '...';
+
+-- right to be forgotten: takes their embeddings, transcripts and remembered facts with it
+-- (ON DELETE CASCADE)
 DELETE FROM people WHERE person_id = '...';
 ```
 

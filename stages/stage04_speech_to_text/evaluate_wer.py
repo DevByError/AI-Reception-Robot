@@ -46,7 +46,9 @@ from pathlib import Path
 
 import numpy as np
 
-from stt_listener_live import WhisperSTTEngine, real_initial_prompt, real_vocabulary
+from stt_listener_live import (
+    WhisperSTTEngine, real_hotwords, real_initial_prompt, real_vocabulary,
+)
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "test_samples"
 MANIFEST_PATH = SAMPLES_DIR / "manifest.json"
@@ -99,7 +101,8 @@ def main() -> None:
     # the initial prompt/vocabulary are actually helping (re-run with WhisperSTTEngine()
     # bare, no args, to A/B against the unbiased baseline if you want to confirm that directly).
     engine = WhisperSTTEngine(
-        initial_prompt=real_initial_prompt(), vocabulary=real_vocabulary()
+        initial_prompt=real_initial_prompt(), vocabulary=real_vocabulary(),
+        hotwords=real_hotwords(),
     )
 
     rows: list[tuple[str, str, str, str, float]] = []

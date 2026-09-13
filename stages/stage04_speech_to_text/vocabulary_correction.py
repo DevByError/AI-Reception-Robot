@@ -22,6 +22,33 @@ from __future__ import annotations
 # confidently swapping in a wrong "correction".
 MATCH_SCORE_THRESHOLD = 85
 
+# A SECOND gate, on plain whole-string similarity, applied to whatever WRatio picked.
+#
+# WRatio is a composite: part of what it scores is partial-ratio, which asks "does the short
+# string appear inside the long one" and deliberately does NOT penalise the length difference.
+# That is the right behaviour for matching a phrase against a longer phrase, and completely wrong
+# here, where a single low-confidence WORD is being replaced. Measured against this project's own
+# vocabulary (2026-09-05):
+#
+#     heard "a"     -> "Lina"         WRatio 90.0   <- accepted, and badly wrong
+#     heard "Alex"  -> "Alex Tan"  WRatio 90.0   <- accepted, replaced a name with a longer one
+#
+# Both cleared the 85 threshold purely on containment. The damage is worse than leaving the word
+# flagged: a "[??]" tells the rest of the pipeline the word is doubtful (and now prompts the robot
+# to ask about it - see _handle_repair in Stage 08), whereas a confident wrong word goes straight
+# into knowledge-base retrieval as if the visitor had said it.
+#
+# fuzz.ratio scores the whole strings against each other, so length mismatch costs. On the same
+# vocabulary it separates the two cases cleanly - the real corrections this module exists for
+# score 86-100, the containment accidents score 40-53:
+#
+#     "Enginering" -> "Engineering"   ratio  95.2   (real typo fix, kept)
+#     "engineering"-> "Engineering"   ratio 100.0   (case only, kept)
+#     "Librari"    -> "Library"       ratio  85.7   (real typo fix, kept)
+#     "Alex"       -> "Alex Tan"   ratio  53.3   (rejected)
+#     "a"          -> "Lina"          ratio  40.0   (rejected)
+MIN_WHOLE_WORD_RATIO = 70
+
 
 def try_correct(word_text: str, probability: float, vocabulary: list[str],
                  confidence_threshold: float) -> str | None:
@@ -50,9 +77,17 @@ def try_correct(word_text: str, probability: float, vocabulary: list[str],
     match = process.extractOne(
         word_text.strip(), vocabulary, scorer=fuzz.WRatio, processor=utils.default_process
     )
-    if match and match[1] >= MATCH_SCORE_THRESHOLD:
-        return match[0]
-    return None
+    if not match or match[1] < MATCH_SCORE_THRESHOLD:
+        return None
+
+    # Second gate - see MIN_WHOLE_WORD_RATIO. WRatio chose the candidate; plain ratio decides
+    # whether it is actually the same WORD rather than merely contained in it.
+    whole = fuzz.ratio(
+        utils.default_process(word_text.strip()), utils.default_process(match[0])
+    )
+    if whole < MIN_WHOLE_WORD_RATIO:
+        return None
+    return match[0]
 
 
 if __name__ == "__main__":
@@ -77,5 +112,33 @@ if __name__ == "__main__":
     print(f"Low-confidence 'banana' (no good match) -> {no_match!r}")
     assert no_match is None
 
-    print("\nOK: only low-confidence words get corrected, and only when there's a strong "
-          "enough vocabulary match.")
+    # --- containment accidents (2026-09-05) ---------------------------------------------------
+    # A short low-confidence word must never be "corrected" into a longer one that merely
+    # CONTAINS it. Both of these scored 90 on WRatio - above MATCH_SCORE_THRESHOLD - purely
+    # because of the partial-ratio component, and were being accepted before MIN_WHOLE_WORD_RATIO
+    # was added. See that constant's comment for the measurements.
+    real_vocab = ["Lincoln University College", "Alex Tan", "Lina", "Engineering", "Library"]
+
+    nickname = try_correct("Alex", probability=0.3, vocabulary=real_vocab,
+                           confidence_threshold=0.5)
+    print(f"Short name inside a longer one 'Alex' -> {nickname!r}")
+    assert nickname is None, (
+        f"'Alex' was rewritten as {nickname!r} - a confident wrong word goes straight into "
+        f"knowledge-base retrieval, which is worse than leaving it flagged as uncertain"
+    )
+
+    stray = try_correct("a", probability=0.2, vocabulary=real_vocab, confidence_threshold=0.5)
+    print(f"Stray single letter 'a' -> {stray!r}")
+    assert stray is None, f"a stray letter became {stray!r}"
+
+    # ...while the corrections this module actually exists for still happen.
+    assert try_correct("Enginering", 0.3, real_vocab, 0.5) == "Engineering"
+    assert try_correct("Librari", 0.3, real_vocab, 0.5) == "Library"
+    # Case-only differences on short words must still pass - this is the 2026-08-12 fix that
+    # processor=default_process was added for, and the new gate must not undo it.
+    assert try_correct("engineering", 0.3, real_vocab, 0.5) == "Engineering"
+    assert try_correct("how", 0.3, ["How", "Where", "What"], 0.5) == "How"
+    print("Real typo/case fixes still applied: 'Enginering', 'Librari', 'engineering', 'how'")
+
+    print("\nOK: only low-confidence words get corrected, only when there's a strong enough "
+          "vocabulary match, and never into a longer word that merely contains what was heard.")

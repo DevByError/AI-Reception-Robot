@@ -80,6 +80,15 @@ def _euclidean_distance(a: list[float], b: list[float]) -> float:
 EUCLIDEAN_MATCH_THRESHOLD = 0.6  # placeholder threshold, tuned for fake_embedding()'s scale only
 
 
+# How much clear water the best candidate needs over the runner-up before the robot is willing
+# to say a name out loud. In SFace cosine-similarity terms 0.05 is a small but real gap - two
+# people landing inside it are not distinguishable from this one frame, and the honest answer is
+# "I don't know you" rather than a coin toss between two students' identities. See
+# FaceMemoryStore.find_match(); temporal voting in Stage 08 then gives borderline cases several
+# more frames to resolve themselves before anything is said at all.
+MATCH_AMBIGUITY_MARGIN = 0.05
+
+
 def default_is_match(a: list[float], b: list[float]) -> bool:
     """Default matcher for the fake_embedding() placeholder - not meaningful for real
     embeddings, which should pass their own is_match (see sface_embedder.SFaceEmbedder)."""
@@ -97,9 +106,16 @@ class FaceMemoryStore:
     stating plainly: a failed write means that change is only in memory and will be lost on
     exit, which is why the warning is printed rather than swallowed."""
 
-    def __init__(self, is_match: Callable[[object, object], bool] = default_is_match, db=None):
+    def __init__(self, is_match: Callable[[object, object], bool] = default_is_match, db=None,
+                 score: Callable[[object, object], float] | None = None,
+                 ambiguity_margin: float = MATCH_AMBIGUITY_MARGIN):
         self._records: dict[str, FaceRecord] = {}
         self.is_match = is_match
+        # Optional similarity function (SFaceEmbedder.similarity). With it, find_match() picks
+        # the BEST candidate and refuses to guess between two close ones; without it, it keeps
+        # the original first-match behaviour. See find_match().
+        self.score = score
+        self.ambiguity_margin = ambiguity_margin
         self.db = db
         self._last_persist: dict[str, float] = {}
         if db is not None:
@@ -134,14 +150,70 @@ class FaceMemoryStore:
             print(f"[db] could not persist {description} ({exc!r}) - kept in memory only for "
                   f"this session.")
 
+    def get(self, person_id: str) -> FaceRecord | None:
+        """Looks somebody up by id when the caller already knows who they are - the recognition
+        step has already happened and produced a person_id, and re-running find_match() against
+        every stored embedding just to recover the record it came from would be absurd.
+
+        Public for the same reason __len__ is: so callers don't reach into _records. Used by
+        Stage 08 to read last_seen when building the greeting's recall line.
+        """
+        return self._records.get(person_id)
+
     def find_match(self, embedding) -> FaceRecord | None:
-        """Matches against ANY of a record's stored samples - one match is enough, since a
-        single failed comparison (bad angle/lighting on either side) shouldn't cost a
-        recognition when another stored sample would have matched fine."""
+        """Who this face belongs to, or None.
+
+        Matches against ANY of a record's stored samples - one match is enough, since a single
+        failed comparison (bad angle/lighting on either side) shouldn't cost a recognition when
+        another stored sample would have matched fine.
+
+        BUT (fixed 2026-09-05) it returns the BEST match, not the first one found. The previous
+        version walked the records in dictionary order and returned whoever cleared the threshold
+        first, which is a misidentification waiting to happen and gets steadily more likely as
+        more students enroll: if Ahmad was enrolled first and one of his samples scrapes 0.37,
+        he is returned even when Sara scores 0.85 on the very same face. Greeting the wrong
+        person by name is the worst failure this system has - it also attaches their whole
+        conversation to somebody else's record.
+        Falls back to the old first-match behaviour when no scoring function was supplied, so a
+        caller that only has a boolean is_match still works.
+
+        The margin is the second half of the fix. Two people scoring 0.62 and 0.60 is not a
+        recognition, it is a coin toss - and answering "I don't know you" is always recoverable
+        (the robot greets them generically, or asks their name), while answering with the wrong
+        name is not.
+        """
+        if self.score is None:
+            for rec in self._records.values():
+                if any(self.is_match(embedding, sample) for sample in rec.embeddings):
+                    return rec
+            return None
+
+        scored: list[tuple[float, FaceRecord]] = []
         for rec in self._records.values():
-            if any(self.is_match(embedding, sample) for sample in rec.embeddings):
-                return rec
-        return None
+            if not rec.embeddings:
+                continue
+            best = max(self.score(embedding, sample) for sample in rec.embeddings)
+            scored.append((best, rec))
+
+        if not scored:
+            return None
+
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        best_score, best_rec = scored[0]
+        if not self.is_match(embedding, max(
+            best_rec.embeddings, key=lambda s: self.score(embedding, s)
+        )):
+            return None  # nobody clears the threshold at all
+
+        if len(scored) > 1:
+            runner_up = scored[1][0]
+            if best_score - runner_up < self.ambiguity_margin:
+                print(f"[face] ambiguous match: {best_rec.name} {best_score:.3f} vs "
+                      f"{scored[1][1].name} {runner_up:.3f} (need a {self.ambiguity_margin:.2f} "
+                      f"gap) - treating as unknown rather than guessing.")
+                return None
+
+        return best_rec
 
     def register(self, name: str, embeddings, consent_given: bool) -> FaceRecord:
         """Only call this after getting explicit consent from the person (consent_given=True).
@@ -383,3 +455,66 @@ if __name__ == "__main__":
 
     print("\nOK: persistence mirroring behaves correctly (loading, write-through, throttling, "
           "and degrading safely when the database is down).")
+
+    # --- best match, not first match (2026-09-05) -----------------------------------------
+    # The bug this replaces: find_match() walked the records in insertion order and returned
+    # whoever cleared the threshold FIRST. With one person enrolled that is indistinguishable
+    # from correct; with several it silently becomes "greet whoever enrolled earliest and is
+    # vaguely similar", which is the worst failure a face system has.
+    print("\n== Best-match selection ==")
+
+    def cosine_like(a, b):
+        """Stand-in scorer with the shape of SFaceEmbedder.similarity - higher is more alike."""
+        return 1.0 - _euclidean_distance(a, b)
+
+    def cosine_like_match(a, b):
+        return cosine_like(a, b) >= 0.5
+
+    store = FaceMemoryStore(is_match=cosine_like_match, score=cosine_like)
+    # Enrolled FIRST, and only a mediocre match for the probe below.
+    early = store.register("Ahmad", [[0.60, 0.0, 0.0]], consent_given=True)
+    # Enrolled second, and a near-perfect match.
+    late = store.register("Sara", [[0.99, 0.0, 0.0]], consent_given=True)
+
+    probe = [1.0, 0.0, 0.0]
+    print(f"  probe scores: Ahmad={cosine_like(probe, early.embeddings[0]):.2f}, "
+          f"Sara={cosine_like(probe, late.embeddings[0]):.2f}")
+    best = store.find_match(probe)
+    print(f"  find_match -> {best.name if best else None}")
+    assert best is not None and best.name == "Sara", (
+        f"returned {best.name if best else None} - the first person to clear the threshold won "
+        f"over the far better match, which is the misidentification bug this replaces"
+    )
+
+    # Two people who are genuinely too close to call must produce NO answer rather than a guess.
+    # "I don't know you" is recoverable; the wrong name is not.
+    ambiguous = FaceMemoryStore(is_match=cosine_like_match, score=cosine_like)
+    ambiguous.register("Twin A", [[0.80, 0.0, 0.0]], consent_given=True)
+    ambiguous.register("Twin B", [[0.81, 0.0, 0.0]], consent_given=True)
+    tie = ambiguous.find_match([0.805, 0.0, 0.0])
+    print(f"  two near-identical candidates -> {tie.name if tie else None}")
+    assert tie is None, f"guessed {tie.name!r} between two indistinguishable people"
+
+    # A clear winner must still be returned even when somebody else is ALSO above threshold -
+    # the margin must not make the recognizer uselessly timid. (Note the two Twins above stay
+    # unresolvable at any probe, which is correct: nothing separates them by more than 0.01.)
+    crowded = FaceMemoryStore(is_match=cosine_like_match, score=cosine_like)
+    crowded.register("Distant", [[0.60, 0.0, 0.0]], consent_given=True)
+    crowded.register("Obvious", [[0.99, 0.0, 0.0]], consent_given=True)
+    clear = crowded.find_match([1.0, 0.0, 0.0])
+    print(f"  clear winner among several above threshold -> {clear.name if clear else None}")
+    assert clear is not None and clear.name == "Obvious", clear
+
+    # And a face nobody matches is still unknown.
+    assert crowded.find_match([5.0, 5.0, 5.0]) is None
+
+    # Without a scorer, the original first-match behaviour is preserved for callers that only
+    # have a boolean matcher (this file's own mock, and anything built against the old API).
+    legacy = FaceMemoryStore(is_match=cosine_like_match)
+    legacy.register("First", [[0.60, 0.0, 0.0]], consent_given=True)
+    legacy.register("Second", [[0.99, 0.0, 0.0]], consent_given=True)
+    assert legacy.find_match(probe).name == "First"
+
+    print("  [OK] best match wins, ambiguous pairs return nobody, legacy callers unchanged")
+    print("\nOK: recognition picks the best candidate rather than the first, and refuses to "
+          "choose between two people it cannot actually tell apart.")

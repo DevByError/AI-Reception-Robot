@@ -219,7 +219,9 @@ if __name__ == "__main__":
     # quit with 'q', run it again, and it should recognize you without asking. Without a
     # reachable MySQL it falls back to the old memory-only behaviour and says so.
     db = connect_or_none()
-    store = FaceMemoryStore(is_match=embedder.is_match, db=db)
+    store = FaceMemoryStore(
+        is_match=embedder.is_match, score=embedder.similarity, db=db
+    )
     if db is not None:
         print(f"Loaded {len(store)} known person(s) from MySQL.")
 

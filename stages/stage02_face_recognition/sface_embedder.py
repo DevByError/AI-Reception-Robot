@@ -25,11 +25,90 @@ RECOGNITION_MODEL = MODELS_DIR / "face_recognition_sface_2021dec.onnx"
 COSINE_MATCH_THRESHOLD = 0.363
 DETECTION_SCORE_THRESHOLD = 0.7  # YuNet's own confidence threshold for "this is a face"
 
+# --- face quality gating (2026-09-05) ----------------------------------------------------------
+# Not every detected face is worth recognizing FROM. A face 30 pixels wide at the far end of a
+# lobby, or motion-blurred as somebody walks past, still produces a perfectly well-formed 128-d
+# embedding - it is just an embedding of mush, and nothing downstream can tell the difference.
+#
+# That does two kinds of damage, and the second is permanent:
+#   1. Matching against a bad embedding gives a near-random score, which is how somebody gets
+#      greeted by the wrong name.
+#   2. ENROLLING or reinforcing with one writes that mush into the database as a reference sample
+#      for a real person, so every future comparison against them is degraded. A bad recognition
+#      is one bad moment; a bad stored sample is a permanently worse recognizer.
+#
+# So quality is measured once, at detection, and callers decide what they are willing to use it
+# for - see FaceDetection.is_usable / is_enrollable below.
+MIN_FACE_WIDTH_PX = 60      # smaller than this and SFace is working from too few real pixels
+MIN_BLUR_VARIANCE = 40.0    # variance of the Laplacian - the standard cheap sharpness measure
+# Enrolling is held to a higher standard than matching: a stored sample is compared against for
+# months, so it is worth waiting a few frames for a good one.
+MIN_ENROLL_FACE_WIDTH_PX = 90
+MIN_ENROLL_BLUR_VARIANCE = 80.0
+MIN_ENROLL_DETECTION_SCORE = 0.90
+
+
+def blur_variance(gray_crop: np.ndarray) -> float:
+    """Sharpness of a crop, as the variance of its Laplacian. Low = blurry.
+
+    Cheap (one convolution on a small crop) and the standard measure for exactly this job. It is
+    scale-dependent, which is why it is only ever compared against a fixed threshold on a face
+    crop rather than between faces of different sizes.
+    """
+    if gray_crop is None or gray_crop.size == 0:
+        return 0.0
+    return float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
+
 
 @dataclass
 class FaceDetection:
     bbox: tuple[int, int, int, int]  # x, y, w, h
     embedding: np.ndarray            # 128-d SFace feature vector
+    # YuNet's own confidence that this is a face at all. Was being discarded before - it is
+    # already computed, and it is one of the three cheap signals that say whether this embedding
+    # can be trusted.
+    score: float = 1.0
+    # Sharpness of the face crop - see blur_variance().
+    sharpness: float = 1e9
+    # The 5 landmarks YuNet returns (right eye, left eye, nose, right mouth corner, left mouth
+    # corner) as (x, y) pairs. Kept because they are free and they are what a frontality check
+    # would need later; mouth_activity.py uses mediapipe for a denser version of the same idea.
+    landmarks: tuple[tuple[int, int], ...] = ()
+
+    @property
+    def width(self) -> int:
+        return self.bbox[2]
+
+    @property
+    def is_usable(self) -> bool:
+        """Good enough to compare against people the robot already knows."""
+        return (
+            self.width >= MIN_FACE_WIDTH_PX
+            and self.sharpness >= MIN_BLUR_VARIANCE
+            and self.score >= DETECTION_SCORE_THRESHOLD
+        )
+
+    @property
+    def is_enrollable(self) -> bool:
+        """Good enough to STORE as a reference sample for somebody - a higher bar, because this
+        one is permanent (see the quality-gating note above)."""
+        return (
+            self.width >= MIN_ENROLL_FACE_WIDTH_PX
+            and self.sharpness >= MIN_ENROLL_BLUR_VARIANCE
+            and self.score >= MIN_ENROLL_DETECTION_SCORE
+        )
+
+    def quality_reason(self) -> str:
+        """Why this face was rejected, for the log. Empty when it is fine."""
+        problems = []
+        if self.width < MIN_FACE_WIDTH_PX:
+            problems.append(f"too small ({self.width}px wide, need {MIN_FACE_WIDTH_PX})")
+        if self.sharpness < MIN_BLUR_VARIANCE:
+            problems.append(f"too blurry (sharpness {self.sharpness:.0f}, "
+                            f"need {MIN_BLUR_VARIANCE:.0f})")
+        if self.score < DETECTION_SCORE_THRESHOLD:
+            problems.append(f"low detector confidence ({self.score:.2f})")
+        return ", ".join(problems)
 
 
 class SFaceEmbedder:
@@ -60,19 +139,90 @@ class SFaceEmbedder:
             x, y, fw, fh = face_row[:4].astype(int)
             aligned = self.recognizer.alignCrop(frame, face_row)
             embedding = self.recognizer.feature(aligned)
-            results.append(FaceDetection(bbox=(int(x), int(y), int(fw), int(fh)),
-                                          embedding=embedding))
+
+            # Sharpness is measured on the ALIGNED CROP rather than the raw frame region: that
+            # is the actual image SFace saw, already rotated and scaled to a fixed size, so the
+            # number means the same thing for a face near the camera and one across the room.
+            # Measuring the raw box instead would mostly measure how big the face was.
+            gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY) if aligned.ndim == 3 else aligned
+
+            # YuNet's row layout: [x, y, w, h, 5x(lx, ly), score] - 15 values. The landmarks and
+            # the score were both being thrown away.
+            landmarks = tuple(
+                (int(face_row[4 + i * 2]), int(face_row[5 + i * 2])) for i in range(5)
+            ) if len(face_row) >= 14 else ()
+            score = float(face_row[14]) if len(face_row) >= 15 else 1.0
+
+            results.append(FaceDetection(
+                bbox=(int(x), int(y), int(fw), int(fh)),
+                embedding=embedding,
+                score=score,
+                sharpness=blur_variance(gray),
+                landmarks=landmarks,
+            ))
 
         return results
+
+    def similarity(self, embedding_a: np.ndarray, embedding_b: np.ndarray) -> float:
+        """Raw cosine similarity, higher = more alike.
+
+        Exposed alongside is_match() because a boolean is not enough to pick between several
+        candidates: with more than one person enrolled, "does this clear the threshold" cannot
+        distinguish a borderline match from a certain one, and answering that question is the
+        difference between greeting the right student and the wrong one. See
+        FaceMemoryStore.find_match().
+        """
+        return float(
+            self.recognizer.match(embedding_a, embedding_b, cv2.FaceRecognizerSF_FR_COSINE)
+        )
 
     def is_match(self, embedding_a: np.ndarray, embedding_b: np.ndarray) -> bool:
         """Matches FaceMemoryStore's is_match(embedding, rec.embedding) signature - pass this
         directly as FaceMemoryStore(is_match=embedder.is_match)."""
-        score = self.recognizer.match(embedding_a, embedding_b, cv2.FaceRecognizerSF_FR_COSINE)
-        return score >= COSINE_MATCH_THRESHOLD
+        return self.similarity(embedding_a, embedding_b) >= COSINE_MATCH_THRESHOLD
 
 
 if __name__ == "__main__":
-    print("Loading YuNet + SFace models...")
+    # --- quality gating (no camera, no models needed) -----------------------------------------
+    # Sharpness first: the measure has to actually separate a sharp image from a blurred one, or
+    # the whole gate is decoration.
+    rng = np.random.default_rng(0)
+    sharp = (rng.integers(0, 2, (112, 112)) * 255).astype(np.uint8)  # hard black/white edges
+    blurred = cv2.GaussianBlur(sharp, (9, 9), 0)
+    sharp_v, blurred_v = blur_variance(sharp), blur_variance(blurred)
+    print(f"blur_variance: sharp={sharp_v:.0f}, blurred={blurred_v:.0f}")
+    assert sharp_v > blurred_v * 3, "the sharpness measure cannot tell blur from detail"
+    assert blur_variance(np.zeros((0, 0), dtype=np.uint8)) == 0.0
+
+    def _face(width=120, sharpness=500.0, score=0.99):
+        return FaceDetection(bbox=(0, 0, width, width), embedding=np.zeros(128, dtype=np.float32),
+                             score=score, sharpness=sharpness)
+
+    good = _face()
+    assert good.is_usable and good.is_enrollable and good.quality_reason() == ""
+
+    # Each rejection reason has to actually reject, and to say WHY - a face silently ignored is
+    # indistinguishable from a recognizer that simply does not work.
+    tiny = _face(width=40)
+    assert not tiny.is_usable and "too small" in tiny.quality_reason()
+
+    fuzzy = _face(sharpness=10.0)
+    assert not fuzzy.is_usable and "too blurry" in fuzzy.quality_reason()
+
+    unsure = _face(score=0.5)
+    assert not unsure.is_usable and "low detector confidence" in unsure.quality_reason()
+
+    # Enrolling is deliberately stricter than matching: a stored sample is compared against for
+    # months, so a face that is fine to RECOGNIZE from can still be too poor to LEARN from.
+    borderline = _face(width=70, sharpness=50.0, score=0.95)
+    assert borderline.is_usable, "a decent face was rejected for matching"
+    assert not borderline.is_enrollable, (
+        "a borderline face was accepted as a permanent reference sample - that damage does not "
+        "wash out, it makes every future comparison against that person worse"
+    )
+    print("OK: quality gating separates usable faces from unusable ones, holds enrollment to a "
+          "higher bar, and reports why.")
+
+    print("\nLoading YuNet + SFace models...")
     embedder = SFaceEmbedder()
     print("OK: models loaded successfully. Run face_memory_live.py for the full webcam demo.")

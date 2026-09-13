@@ -46,13 +46,63 @@ class TTSStub:
         print(f'[TTS] "{text}"')
 
 
-def build_greeting(people: list[Person]) -> str:
+# Several phrasings per situation instead of one fixed string each.
+#
+# WHY (2026-09-05): the robot greeted every stranger with the identical sentence, forever. One
+# visitor never notices - but a kiosk in a lobby is watched by the same students day after day,
+# and hearing the exact same words at the exact same moment is the clearest possible signal that
+# there is a script running. Varying the wording costs nothing and removes that tell. The
+# information conveyed is identical in every variant; only the words change.
+#
+# The trailing "how can I help" question is deliberately part of each variant rather than
+# appended separately: it is what tells the visitor it is their turn to speak, and a greeting
+# that ends without it leaves people waiting for the robot to continue.
+_UNKNOWN_SINGLE = (
+    "Hi there! How can I help you today?",
+    "Hello! What can I do for you?",
+    "Hi! How can I help?",
+    "Hey there! What can I help you with?",
+)
+
+_KNOWN_SINGLE = (
+    "Welcome back, {name}! How can I help you today?",
+    "Hi {name}! What can I do for you?",
+    "Good to see you, {name}! How can I help?",
+    "Hey {name}! What can I help you with today?",
+)
+
+_UNKNOWN_GROUP = (
+    "Hi everyone! How can I help you today?",
+    "Hello all! What can I do for you?",
+    "Hi there, everyone! How can I help?",
+)
+
+_KNOWN_GROUP = (
+    "Hi everyone, welcome back {name} and friends! How can I help you all?",
+    "Hello all - good to see you again, {name}! What can I do for you?",
+    "Hi everyone! Nice to see you back, {name}. How can I help?",
+)
+
+
+def build_greeting(people: list[Person], recall: str = "", rng=None) -> str:
     """
     - a single unknown person  -> a generic greeting.
     - a single known person    -> a personal greeting.
     - a group (regardless of who is known) -> one shared group greeting, mentioning one name as
       a personal touch if available.
+
+    `recall` is an optional extra sentence about what the robot remembers from this person's last
+    visit (Stage 05's visit_memory.build_recall_line). It goes BEFORE the "how can I help"
+    question, because that question is the visitor's cue to start talking - putting anything
+    after it means the robot is still speaking when they have already begun. Empty string is the
+    normal case: a new visitor, or a returning one with nothing worth recalling.
+
+    `rng` is injectable purely so tests can pin the wording - see this file's self-test.
     """
+    import random
+
+    rng = rng or random
+
     if not people:
         return ""
 
@@ -61,13 +111,23 @@ def build_greeting(people: list[Person]) -> str:
     if len(people) == 1:
         p = people[0]
         if p.known_name:
-            return f"Welcome back, {p.known_name}! How can I help you today?"
-        return "Hi there! How can I help you today?"
+            greeting = rng.choice(_KNOWN_SINGLE).format(name=p.known_name)
+        else:
+            greeting = rng.choice(_UNKNOWN_SINGLE)
+    elif known_names:
+        greeting = rng.choice(_KNOWN_GROUP).format(name=known_names[0])
+    else:
+        greeting = rng.choice(_UNKNOWN_GROUP)
 
-    # group
-    if known_names:
-        return f"Hi everyone, welcome back {known_names[0]} and friends! How can I help you all?"
-    return "Hi everyone! How can I help you today?"
+    if not recall:
+        return greeting
+
+    # Split the closing question off and slot the recall in front of it, so the greeting still
+    # ends on the visitor's cue to speak.
+    head, sep, question = greeting.rpartition("! ")
+    if not sep:
+        return f"{greeting} {recall}"
+    return f"{head}! {recall} {question}"
 
 
 class GreetingStateMachine:
@@ -76,7 +136,11 @@ class GreetingStateMachine:
         self.expression = expression
         self.tts = tts
 
-    def on_people_entered(self, people: list[Person]) -> None:
+    def on_people_entered(self, people: list[Person], recall: str = "") -> None:
+        """`recall` is an optional sentence about what the robot remembers from this person's
+        last visit - Stage 08 looks it up (visit_memory.build_recall_line) and passes it in,
+        because only the orchestrator has the database. Defaults to none, so this file's own
+        self-test and Stage 03's demo are unaffected."""
         if self.state != RobotState.IDLE or not people:
             return  # if already mid-interaction, don't interrupt with a new greeting
                      # (handled later by Stage 08)
@@ -86,7 +150,7 @@ class GreetingStateMachine:
 
         self.state = RobotState.GREETING
         self.expression.set_state(self.state)
-        self.tts.speak(build_greeting(people))
+        self.tts.speak(build_greeting(people, recall=recall))
 
         self.state = RobotState.LISTENING
         self.expression.set_state(self.state)
@@ -115,5 +179,41 @@ if __name__ == "__main__":
     ])
     sm.on_interaction_timeout_or_done()
 
-    print("\nOK: the greeting changes correctly per case (solo/known/group), and the state "
-          "returns to IDLE after each interaction ends.")
+    # --- wording variety + the recall line (2026-09-05) --------------------------------------
+    import random
+
+    print("\n== Case 4: the same situation does not always produce the same words ==")
+    solo = Person(track_id=5, known_name=None)
+    said = {build_greeting([solo], rng=random.Random(seed)) for seed in range(30)}
+    for phrasing in sorted(said):
+        print(f'  "{phrasing}"')
+    assert len(said) > 1, (
+        "every greeting for the same situation came out identical - the same students hear this "
+        "robot every day, and a fixed script is the clearest possible tell that it is one"
+    )
+    assert said <= set(_UNKNOWN_SINGLE), "an unknown visitor was greeted by name"
+
+    print("\n== Case 5: a returning visitor the robot remembers something about ==")
+    known = Person(track_id=6, known_name="Sara")
+    with_recall = build_greeting(
+        [known], recall="Did you get anywhere with the Master of Computer Science?",
+        rng=random.Random(1),
+    )
+    print(f'  "{with_recall}"')
+    assert "Sara" in with_recall
+    assert "Master of Computer Science" in with_recall
+    # The greeting must still END on the question that hands the turn over, or the visitor starts
+    # talking while the robot is still going.
+    assert with_recall.rstrip().endswith("?"), with_recall
+    assert not with_recall.rstrip().endswith(
+        "Did you get anywhere with the Master of Computer Science?"
+    ), "the recall was appended after the 'how can I help' cue instead of before it"
+
+    # No recall to make is the common case and must be silent, not padded.
+    plain = build_greeting([known], rng=random.Random(1))
+    assert plain == build_greeting([known], recall="", rng=random.Random(1)) == plain
+
+    print("\nOK: the greeting changes correctly per case (solo/known/group), the wording varies "
+          "between visits instead of repeating one fixed script, a remembered detail is spoken "
+          "before the hand-over question rather than after it, and the state returns to IDLE "
+          "after each interaction ends.")

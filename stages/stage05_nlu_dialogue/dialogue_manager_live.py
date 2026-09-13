@@ -81,19 +81,74 @@ CLAUDE_MODEL = (
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GEMINI_MODEL = (
     "gemini-3.7-flash"  # confirmed current/GA model name via Google's own docs
+    # (ai.google.dev) as of 2026-08 - fast tier, matches this
+    # stage's low-latency voice-interaction goal same as
+    # CLAUDE_MODEL's choice above
 )
-# (ai.google.dev) as of 2026-08 - fast tier, matches this
-# stage's low-latency voice-interaction goal same as
-# CLAUDE_MODEL's choice above
+
+# Gemini's output cap has to be MUCH larger than the answer you actually want, because
+# gemini-3.7-flash is a thinking model and its internal reasoning tokens are billed against
+# max_output_tokens before a single word of the answer is emitted.
+#
+# Measured here on 2026-09-05, asking "how long is the master of computer science" against one
+# retrieved chunk:
+#     cap of 300  ->  thoughts=288, answer=8 tokens, finish_reason=MAX_TOKENS
+#                     spoken result: "It's a two-year programme"   <- cut off mid-sentence
+#     no cap      ->  thoughts=164, answer=23 tokens, finish_reason=STOP
+#                     spoken result: "It's a two-year programme. Would you like to know about
+#                     the upcoming intake dates or entry requirements?"
+#
+# So the old 300 was silently truncating essentially EVERY grounded Gemini answer mid-sentence,
+# on the non-streaming path as much as the streaming one. Setting thinking_config with
+# thinking_budget=0 does not help - this model ignores it and thinks anyway (measured: 289
+# thought tokens with the budget set to zero).
+#
+# 1200 leaves room for a few hundred tokens of thinking plus a short spoken answer, while still
+# bounding a runaway. Brevity is NOT this number's job and never was: a token cap produces a
+# sentence that stops mid-word, which is worse than a long answer. Length is controlled by
+# SPOKEN_STYLE_RULES below ("about two sentences"), which the measurement above shows working.
+GEMINI_MAX_OUTPUT_TOKENS = 1200
 
 # Deliberately two separate prompts/calls, not one free-form "answer this" call - they have
 # opposite rules (never go beyond the given text vs. free to talk about anything), matching
 # AnswerGenerator's two methods in dialogue_manager.py.
 
+# Shared by BOTH prompts below rather than written twice, so the robot's speaking voice can't
+# drift apart between the grounded path and the general-conversation path - a visitor asking two
+# questions in one visit routinely crosses between them, and hearing the register change
+# mid-conversation is exactly the kind of seam that reads as "there are two different systems in
+# here" rather than as one person talking.
+#
+# WHY THESE RULES (added 2026-09-05): the previous prompts already said "no markdown, spoken
+# sentences", which stopped asterisks being read aloud but did nothing about REGISTER. What came
+# out was correct, complete, and unmistakably machine-generated: full paragraphs delivered in one
+# breath, the question restated before answering it, "based on the information provided", and the
+# same opening every single time. Each rule below targets one of those observed tells. None of
+# them change what the robot is allowed to say - only how it sounds saying it.
+SPOKEN_STYLE_RULES = (
+    "You are speaking OUT LOUD to someone standing in front of you. There is no screen and no "
+    "text - they only hear you. Sound like a real receptionist having a conversation, not like "
+    "a document being read.\n"
+    "  - Plain spoken sentences only: no markdown, no bullet points, no headings, no asterisks, "
+    "no numbered lists. If you need to list things, say them in a sentence.\n"
+    "  - Keep it to about two sentences. Give the one thing they actually asked for, then stop. "
+    "If there is more worth knowing, offer it in a short question instead of saying it all - "
+    "for example 'Want the full entry requirements?'\n"
+    "  - Use contractions and everyday words: 'it's on the third floor', not 'it is located on "
+    "the third floor'.\n"
+    "  - Never restate their question back to them before answering. Start with the answer.\n"
+    "  - Never mention where your information came from. Do not say 'based on the information "
+    "provided', 'according to the text', 'the knowledge base', 'the context' or anything like "
+    "them - a receptionist doesn't narrate their own memory. Just answer.\n"
+    "  - Never refer to yourself as an AI, a model, or a language model.\n"
+    "  - Vary how you open. Do not begin every answer the same way.\n"
+    "  - Numbers, dates and times get spoken the way a person says them: 'the third floor', "
+    "'about two years', 'nine in the morning'."
+)
+
 GROUNDED_SYSTEM_PROMPT = (
-    "You are a friendly university front-desk robot receptionist. Every answer is spoken out "
-    "loud through a speaker - there is no screen - so respond in plain spoken sentences only: "
-    "no markdown, no bullet points, no headings, no asterisks. "
+    "You are a friendly university front-desk robot receptionist.\n\n"
+    f"{SPOKEN_STYLE_RULES}\n\n"
     "Answer the student's question using ONLY the information given below. If that information "
     "doesn't actually answer the question, say plainly that you don't have that information - "
     "never invent or guess a university-specific fact that isn't in the text you were given."
@@ -109,9 +164,8 @@ GROUNDED_SYSTEM_PROMPT = (
 # refused to even try. The strictly-grounded path (GROUNDED_SYSTEM_PROMPT above, used when the
 # knowledge base DID find something) is untouched - still 100% restricted to retrieved text.
 GENERAL_CLASSIFY_PROMPT = (
-    "You are a friendly university front-desk robot receptionist. Every answer is spoken out "
-    "loud through a speaker - there is no screen - so respond in plain spoken sentences only: "
-    "no markdown, no bullet points, no headings, no asterisks.\n\n"
+    "You are a friendly university front-desk robot receptionist.\n\n"
+    f"{SPOKEN_STYLE_RULES}\n\n"
     "A student just asked something, and the university's own knowledge base had no matching "
     "information for it. First decide: does this question sound like it's specifically ABOUT "
     "this university (a department, staff member, building, policy, event, class, tuition, "
@@ -154,6 +208,26 @@ def _parse_answer(raw: str) -> str:
     # returning nothing
 
 
+# --- streaming grounded answers ---------------------------------------------------------------
+# Only the GROUNDED path streams, deliberately. classify_and_answer_general() has to parse a
+# two-line "UNIVERSITY_RELATED: / ANSWER:" format out of the model's reply (see _parse_answer
+# above), which means it cannot act on the reply until the reply is finished - streaming it would
+# buy nothing. The grounded path has no such structure: every token is answer text, so Stage 06
+# can start speaking sentence one while sentence two is still being written.
+#
+# Backends that don't implement stream_grounded_answer() keep working unchanged - the caller
+# (dialogue_manager.py's handle_question_stream) checks for the method and falls back to the
+# ordinary blocking call, which is what UniversityOnlyAnswerGenerator and MockAnswerGenerator do.
+
+
+def _grounded_prompt(question: str, chunks: list[KnowledgeChunk]) -> str:
+    """The one place the grounded user-message is built, shared by every backend's streaming and
+    non-streaming call alike - four copies of this f-string had already drifted into four
+    slightly different spellings of the same thing."""
+    context = "\n\n".join(f"- {c.text} (source: {c.source_url})" for c in chunks)
+    return f"Information:\n{context}\n\nQuestion: {question}"
+
+
 class ClaudeAnswerGenerator:
     """Implements the same AnswerGenerator protocol as MockAnswerGenerator
     (dialogue_manager.py) - a drop-in replacement, so DialogueManager itself never changes.
@@ -189,6 +263,19 @@ class ClaudeAnswerGenerator:
             temperature=0.2,  # low - this is meant to be a precise, grounded answer, not creative
         )
         return message.content[0].text.strip()
+
+    def stream_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]):
+        """Same call as generate_grounded_answer(), yielding text as it arrives - see the
+        "streaming grounded answers" note above."""
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=300,
+            system=GROUNDED_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": _grounded_prompt(question, chunks)}],
+            temperature=0.2,
+        ) as stream:
+            for piece in stream.text_stream:
+                yield piece
 
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
         message = self.client.messages.create(
@@ -247,10 +334,30 @@ class GeminiAnswerGenerator:
             config=types.GenerateContentConfig(
                 system_instruction=GROUNDED_SYSTEM_PROMPT,
                 temperature=0.2,  # low - a precise, grounded answer, not creative
-                max_output_tokens=300,
+                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
             ),
         )
         return response.text.strip()
+
+    def stream_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]):
+        """Same call as generate_grounded_answer(), yielding text as it arrives - see the
+        "streaming grounded answers" note above. Exceptions propagate here for exactly the same
+        reason they do there: the fallback chain belongs to the caller, not to one backend."""
+        from google.genai import types
+
+        stream = self.client.models.generate_content_stream(
+            model=self.model,
+            contents=_grounded_prompt(question, chunks),
+            config=types.GenerateContentConfig(
+                system_instruction=GROUNDED_SYSTEM_PROMPT,
+                temperature=0.2,
+                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+            ),
+        )
+        for chunk in stream:
+            piece = getattr(chunk, "text", None)
+            if piece:
+                yield piece
 
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
         from google.genai import types
@@ -277,7 +384,7 @@ class GeminiAnswerGenerator:
         base_config = {
             "system_instruction": GENERAL_CLASSIFY_PROMPT,
             "temperature": 0.7,  # higher - general chat can be more natural/varied
-            "max_output_tokens": 300,
+            "max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS,
         }
         try:
             search_tool = types.Tool(google_search=types.GoogleSearch())
@@ -340,6 +447,25 @@ class GroqAnswerGenerator:
             temperature=0.2,  # low - this is meant to be a precise, grounded answer, not creative
         )
         return completion.choices[0].message.content.strip()
+
+    def stream_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]):
+        """Same call as generate_grounded_answer(), yielding text as it arrives - see the
+        "streaming grounded answers" note above."""
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": GROUNDED_SYSTEM_PROMPT},
+                {"role": "user", "content": _grounded_prompt(question, chunks)},
+            ],
+            temperature=0.2,
+            stream=True,
+        )
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            piece = chunk.choices[0].delta.content
+            if piece:
+                yield piece
 
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
         completion = self.client.chat.completions.create(
@@ -531,6 +657,18 @@ class OllamaAnswerGenerator:
             model=self.model,
         )
 
+    def stream_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]):
+        """Same call as generate_grounded_answer(), yielding text as it arrives - see the
+        "streaming grounded answers" note above. This matters MORE for the local model than for
+        the cloud one: a 3B model on this machine is the slowest backend in the chain, so it is
+        where hiding generation time behind the first spoken sentence buys the most."""
+        yield from self._client.chat_stream(
+            _grounded_prompt(question, chunks),
+            system=GROUNDED_SYSTEM_PROMPT,
+            temperature=0.2,
+            model=self.model,
+        )
+
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
         # No search tool here, unlike GeminiAnswerGenerator - a local model can only answer from
         # what it learned during training. GENERAL_CLASSIFY_PROMPT's honesty rule ("never state
@@ -569,6 +707,19 @@ class ChainAnswerGenerator:
     def names(self) -> list[str]:
         return [name for name, _ in self.generators]
 
+    @property
+    def supports_streaming(self) -> bool:
+        """Whether ANY backend in this chain can actually stream.
+
+        A chain always HAS a stream_grounded_answer method, so a caller checking for the method
+        alone would take the streaming route even for a chain of backends where none of them can
+        stream - and then, when that route failed on the first token, skip straight past tier 1
+        of the fallback chain (the ordinary grounded call) to tier 2 (a live search). That would
+        be a silent downgrade in answer quality caused purely by how the capability was
+        detected. dialogue_manager.py checks this property before committing.
+        """
+        return any(hasattr(g, "stream_grounded_answer") for _, g in self.generators)
+
     def generate_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]) -> str:
         errors = []
         for name, generator in self.generators:
@@ -586,6 +737,59 @@ class ChainAnswerGenerator:
             print(f"[chain] {name} returned an empty grounded answer - trying the next backend.")
             errors.append(f"{name}: empty answer")
         raise RuntimeError(f"every answer backend failed ({'; '.join(errors)})")
+
+    def stream_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]):
+        """Streaming counterpart to generate_grounded_answer(), with the same "first backend
+        that actually works" behaviour - but the failover window closes as soon as the first
+        piece of text is out.
+
+        That is the important difference from the non-streaming version and the reason this
+        isn't a plain loop: once a fragment has been yielded, Stage 06 may already be SPEAKING
+        it, so silently restarting on a different backend would make the robot say the first
+        half of one answer followed by the whole of a different one. So each backend is given
+        its chance to produce its FIRST fragment inside the try - a backend that is down fails
+        there, before anything is audible, and the next one is tried cleanly. After that first
+        fragment we are committed: a mid-stream failure ends the answer where it stands (the
+        caller still has the partial text and speaks what it got) rather than starting over.
+
+        Backends without a stream_grounded_answer() are skipped rather than treated as failures
+        - see the module note above; the caller falls back to the blocking path if the whole
+        chain has nobody who can stream.
+        """
+        errors = []
+        for name, generator in self.generators:
+            streamer = getattr(generator, "stream_grounded_answer", None)
+            if streamer is None:
+                continue
+
+            stream = streamer(question, chunks)
+            try:
+                first = next(stream)
+            except StopIteration:
+                print(f"[chain] {name} streamed an empty grounded answer - trying the next "
+                      f"backend.")
+                errors.append(f"{name}: empty stream")
+                continue
+            except Exception as exc:
+                print(f"[chain] {name} failed to start streaming ({exc!r}) - trying the next "
+                      f"backend.")
+                errors.append(f"{name}: {exc!r}")
+                continue
+
+            if errors:
+                print(f"[chain] streaming from {name} after {len(errors)} failure(s).")
+            yield first
+            try:
+                yield from stream
+            except Exception as exc:
+                # Already committed - part of this answer is out of the speaker. Stop here and
+                # let the caller speak what it has instead of contradicting itself.
+                print(f"[chain] {name} failed mid-stream ({exc!r}) - ending this answer with "
+                      f"what was already produced.")
+            return
+
+        detail = "; ".join(errors) if errors else "no backend supports streaming"
+        raise RuntimeError(f"no streaming answer backend succeeded ({detail})")
 
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
         for name, generator in self.generators:

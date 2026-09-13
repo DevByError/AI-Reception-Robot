@@ -161,6 +161,39 @@ SCHEMA_STATEMENTS = [
             REFERENCES people (person_id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
+    # What the robot actually REMEMBERS about someone, as opposed to what was said (utterances,
+    # below). Added 2026-09-05 for the recall line in Stage 08's greeting - "did you end up
+    # applying for the IT programme?" - which is the single thing that most makes a returning
+    # visitor feel recognized rather than merely identified.
+    #
+    # Why a separate table rather than reading the transcript back: a transcript is the wrong
+    # shape for recall. Answering "what do I know about this person" from it means replaying
+    # every line of every past visit through a language model at the exact moment somebody is
+    # standing there waiting to be greeted. A handful of short extracted facts is one indexed
+    # SELECT, and it is written once at the END of a visit (see stage05's visit_memory.py), when
+    # nobody is waiting.
+    #
+    # PRIVACY: these are free-text sentences about a real student, so they are more sensitive
+    # than a face vector, not less - a vector is meaningless without the model, a sentence is
+    # not. Two consequences, both enforced here rather than left to the caller: the ON DELETE
+    # CASCADE means "forget me" removes them with everything else (docs/PRIVACY.md), and
+    # `source_conversation_id` keeps each fact traceable to the visit it came from so a wrong or
+    # objectionable fact can be audited rather than just deleted.
+    """
+    CREATE TABLE IF NOT EXISTS person_facts (
+        fact_id                BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        person_id              CHAR(36)        NOT NULL,
+        fact                   VARCHAR(255)    NOT NULL,
+        source_conversation_id BIGINT UNSIGNED NULL,
+        created_at             DATETIME(6)     NOT NULL,
+        PRIMARY KEY (fact_id),
+        KEY idx_facts_person (person_id, created_at),
+        CONSTRAINT fk_facts_person FOREIGN KEY (person_id)
+            REFERENCES people (person_id) ON DELETE CASCADE,
+        CONSTRAINT fk_facts_conversation FOREIGN KEY (source_conversation_id)
+            REFERENCES conversations (conversation_id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
     """
     CREATE TABLE IF NOT EXISTS utterances (
         utterance_id    BIGINT UNSIGNED         NOT NULL AUTO_INCREMENT,
@@ -505,6 +538,90 @@ class RobotDatabase:
 
     # --- retention ----------------------------------------------------------------------------
 
+    # --- what the robot remembers about a person (see the person_facts schema note) ------------
+
+    # Kept deliberately small. This is what gets read at greeting time and fed to the recall
+    # line, and a robot that opens with six things it remembers about you is unsettling rather
+    # than friendly - one, occasionally two, is what a person does.
+    MAX_FACTS_PER_PERSON = 12
+
+    def add_person_facts(self, person_id: str, facts: list[str],
+                         conversation_id: int | None = None) -> int:
+        """Stores newly-learned facts about someone, skipping any it already has.
+
+        The duplicate check is a plain case-insensitive comparison against what is already
+        stored, not a similarity model: the same visitor asking about the same programme on
+        three visits produces three near-identical facts, and the goal is only to stop the exact
+        repeats from accumulating. Near-duplicates surviving is acceptable - MAX_FACTS_PER_PERSON
+        bounds the damage, and the alternative is an embedding call on the greeting path.
+
+        Returns how many were actually inserted.
+        """
+        cleaned = [f.strip() for f in facts if f and f.strip()]
+        if not cleaned:
+            return 0
+
+        existing = {f["fact"].lower() for f in self.person_facts(person_id)}
+        now = _utc_now()
+        inserted = 0
+        with self._cursor() as cur:
+            for fact in cleaned:
+                if fact.lower() in existing:
+                    continue
+                cur.execute(
+                    "INSERT INTO person_facts (person_id, fact, source_conversation_id, "
+                    "created_at) VALUES (%s, %s, %s, %s)",
+                    (person_id, fact[:255], conversation_id, now),
+                )
+                existing.add(fact.lower())
+                inserted += 1
+
+            # Trim oldest-first if this person has accumulated more than the cap. Done here
+            # rather than on read so the table cannot grow without bound for a daily visitor.
+            cur.execute(
+                "SELECT fact_id FROM person_facts WHERE person_id = %s "
+                "ORDER BY created_at DESC, fact_id DESC LIMIT %s, 100",
+                (person_id, self.MAX_FACTS_PER_PERSON),
+            )
+            stale = [row[0] for row in cur.fetchall()]
+            if stale:
+                placeholders = ", ".join(["%s"] * len(stale))
+                cur.execute(
+                    f"DELETE FROM person_facts WHERE fact_id IN ({placeholders})", tuple(stale)
+                )
+        return inserted
+
+    def person_facts(self, person_id: str, limit: int = 12) -> list[dict]:
+        """Most recently learned facts first - the newest thing the robot knows about someone is
+        also the most likely to still be relevant when they come back."""
+        with self._cursor(dictionary=True) as cur:
+            cur.execute(
+                "SELECT fact_id, fact, source_conversation_id, created_at FROM person_facts "
+                "WHERE person_id = %s ORDER BY created_at DESC, fact_id DESC LIMIT %s",
+                (person_id, int(limit)),
+            )
+            return [
+                {
+                    "fact_id": int(row["fact_id"]),
+                    "fact": row["fact"],
+                    "source_conversation_id": (
+                        int(row["source_conversation_id"])
+                        if row["source_conversation_id"] is not None else None
+                    ),
+                    "created_at": _from_utc(row["created_at"]),
+                }
+                for row in cur.fetchall()
+            ]
+
+    def delete_person_facts(self, person_id: str) -> int:
+        """Forgets everything the robot knows about someone WITHOUT forgetting the person - the
+        middle option between "remember me" and "delete me entirely" that PRIVACY.md's deletion
+        request handling needs, for a visitor who wants to stay enrolled but wants a particular
+        thing forgotten."""
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM person_facts WHERE person_id = %s", (person_id,))
+            return cur.rowcount
+
     def delete_people_not_seen_since(self, cutoff: float) -> list[str]:
         """The auto-expiry half of PRIVACY.md rule 3. Selects first so the caller can log/report
         exactly whose data went, instead of only a row count."""
@@ -525,7 +642,7 @@ class RobotDatabase:
         with self._cursor(dictionary=True) as cur:
             result = {}
             for table in ("robot_identity", "people", "face_embeddings", "conversations",
-                          "utterances"):
+                          "utterances", "person_facts"):
                 cur.execute("SELECT COUNT(*) AS n FROM " + table)
                 result[table] = int(cur.fetchone()["n"])
             return result
@@ -595,10 +712,31 @@ if __name__ == "__main__":
         for row in transcript:
             print(f"  [{row['said_at']}] {row['speaker']:<7} {row['text']!r}")
 
+        # --- what the robot remembers about them (person_facts, 2026-09-05) ------------------
+        added = db.add_person_facts(
+            person_id,
+            ["Is applying for the Master of Computer Science.", "Prefers the January intake."],
+            conversation_id=conv_id,
+        )
+        assert added == 2, f"expected 2 facts inserted, got {added}"
+        # Same fact again (different case) must not accumulate a second row.
+        assert db.add_person_facts(person_id, ["prefers the January intake."]) == 0, \
+            "a duplicate fact was stored again - add_person_facts() is not de-duplicating"
+        facts = db.person_facts(person_id)
+        assert len(facts) == 2, f"expected 2 facts back, got {len(facts)}"
+        assert facts[0]["source_conversation_id"] == conv_id, \
+            "a fact lost the conversation it came from - it can no longer be audited"
+        for row in facts:
+            print(f"  remembered: {row['fact']!r}")
+
         assert db.delete_person(person_id), "delete_person() reported nothing deleted"
         assert not db.recent_conversations(person_id), \
             "the conversation outlived the person - ON DELETE CASCADE is not working"
-        print("  cascade delete OK (person, embedding, conversation and transcript all gone)")
+        assert not db.person_facts(person_id), \
+            "remembered facts outlived the person - the privacy cascade misses person_facts, " \
+            "which is the most sensitive table of the set (free text about a real student)"
+        print("  cascade delete OK (person, embedding, conversation, transcript and remembered "
+              "facts all gone)")
         print("\nOK: persistence, retrieval and the right-to-be-forgotten cascade all work.")
 
     db.close()

@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Protocol
+from typing import Iterator, Protocol
 
 from identity import detect_identity_answer
 from knowledge_base import KnowledgeBase, KnowledgeChunk
@@ -94,6 +94,139 @@ class DialogueResult:
     intent: Intent
     answer: str
     used_chunks: list[KnowledgeChunk]
+
+
+@dataclass
+class StreamingDialogueResult:
+    """What handle_question_stream() returns: the routing decision up front, and the answer text
+    as an iterator that is still being produced.
+
+    `intent` and `used_chunks` are known BEFORE a single word is spoken - which is what lets the
+    caller log the route and start playback at the same moment. `pieces` yields the answer in
+    fragments; `is_streaming` says whether those fragments are arriving live from a model or are
+    just one already-finished string handed back in the same shape (the identity answer, the
+    direct-answer fast path, general conversation), so a caller can log the difference without
+    having to care about it otherwise.
+    """
+    intent: Intent
+    used_chunks: list[KnowledgeChunk]
+    pieces: "Iterator[str]"
+    is_streaming: bool
+
+
+# How much of a streamed answer to hold back before speaking any of it - see
+# DialogueManager._stream_grounded(). The first sentence has to be complete and inspected before
+# it can be trusted, because that is where an honest "I don't have that information" appears, and
+# that answer must trigger the live-search fallback instead of being spoken (the exact bug
+# _GROUNDED_NO_INFO_PHRASES was added for on 2026-08-19). Everything after the first sentence
+# streams straight through with no buffering at all.
+_FIRST_SENTENCE_MAX_CHARS = 400  # a model that never emits a terminator can't stall the answer
+
+
+# --- follow-up questions within one visit -------------------------------------------------------
+# Until 2026-09-05 every question was answered in complete isolation: handle_question() took a
+# string and nothing else. That is fine for the first question of a visit and wrong for every one
+# after it, because the second thing a person says is almost never self-contained:
+#
+#     "Tell me about the Master of Computer Science."   -> answered
+#     "How long is it?"                                 -> "it" means nothing; retrieval returns
+#                                                          whatever "how long is it" happens to
+#                                                          match, and the answer is unrelated
+#
+# Two separate things need the history, and they need it differently:
+#
+#   RETRIEVAL needs a self-contained query, because the knowledge base matches on meaning and
+#   "how long is it" carries none. _contextualize() below rewrites a follow-up into something
+#   searchable by prepending what was last asked about.
+#
+#   THE MODEL needs the actual dialogue, so it can resolve the pronoun in its own answer and not
+#   repeat itself. That goes through as conversation turns (see _history_block).
+#
+# Deliberately NOT a coreference model: this is a receptionist answering three or four questions,
+# and prepending the previous question is both cheap and enough. The failure mode is a slightly
+# over-broad search, which the similarity threshold already handles.
+
+# Openers that mean "this refers to what we were just talking about". Checked as prefixes on the
+# cleaned question, so "and how long is it" and "what about the fees" both match.
+_FOLLOW_UP_PREFIXES = (
+    "and ", "what about", "how about", "and what", "and how", "ok what", "okay what",
+    "so what", "so how", "then what", "then how", "also",
+)
+
+# Bare pronouns/determiners standing in for the previous subject. Only meaningful when the
+# question is SHORT - "is it accredited" is a follow-up, "is it true that Malaysia has..." is not.
+_FOLLOW_UP_PRONOUNS = frozenset({"it", "that", "this", "they", "them", "those", "these", "one"})
+_FOLLOW_UP_MAX_WORDS = 8
+
+
+def looks_like_follow_up(question: str) -> bool:
+    """Whether this question only makes sense in the context of the previous one."""
+    cleaned = " ".join(question.lower().replace("?", " ").replace(",", " ").split())
+    if not cleaned:
+        return False
+    if cleaned.startswith(_FOLLOW_UP_PREFIXES):
+        return True
+    words = cleaned.split()
+    if len(words) <= _FOLLOW_UP_MAX_WORDS and _FOLLOW_UP_PRONOUNS.intersection(words):
+        return True
+    return False
+
+
+def _contextualize(question: str, history: list[tuple[str, str]] | None) -> str:
+    """The string to SEARCH the knowledge base with - the question itself, unless it is a
+    follow-up, in which case the last thing the visitor asked is prepended so the query carries
+    the subject the pronoun is standing in for.
+
+    Only the previous VISITOR turn is used, never the robot's answer: the answer is usually far
+    longer than the question and would dominate the embedding, turning a specific follow-up into
+    a search for the general area of the previous answer.
+    """
+    if not history or not looks_like_follow_up(question):
+        return question
+    for role, text in reversed(history):
+        if role == "visitor" and text.strip():
+            return f"{text.strip()} {question.strip()}"
+    return question
+
+
+def _history_block(history: list[tuple[str, str]] | None, max_turns: int = 6) -> str:
+    """The recent dialogue, rendered for the model. Empty string when there is nothing yet."""
+    if not history:
+        return ""
+    lines = [
+        f"{'Student' if role == 'visitor' else 'You'}: {text.strip()}"
+        for role, text in history[-max_turns:]
+        if text and text.strip()
+    ]
+    if not lines:
+        return ""
+    return "Earlier in this conversation:\n" + "\n".join(lines) + "\n\n"
+
+
+def _question_with_context(question: str, history: list[tuple[str, str]] | None) -> str:
+    """The question as handed to the ANSWER GENERATOR, with the recent dialogue in front of it.
+
+    Folded into the question string rather than added as a new AnswerGenerator protocol
+    parameter, deliberately. There are seven generator implementations plus the test doubles in
+    each file's self-test, and two of them (Claude, Groq) cannot be exercised here for lack of an
+    API key - changing a shared signature across all of them to carry a string that every one of
+    them would immediately concatenate into its prompt anyway is churn and risk for no gain. The
+    generators keep taking "the question to answer"; it just carries its own context now.
+    """
+    block = _history_block(history)
+    if not block:
+        return question
+    return f"{block}The student has now asked: {question}"
+
+
+def _first_sentence_ready(buffer: str) -> bool:
+    """Whether `buffer` already contains a complete first sentence worth inspecting."""
+    stripped = buffer.strip()
+    if len(stripped) >= _FIRST_SENTENCE_MAX_CHARS:
+        return True
+    # Require a little text before treating a terminator as a sentence end, so an answer opening
+    # with "Sure." isn't inspected (and judged) on one word.
+    return len(stripped) >= 20 and stripped[-1] in ".!?"
 
 
 class AnswerGenerator(Protocol):
@@ -159,7 +292,131 @@ class DialogueManager:
         self.kb = kb
         self.answer_generator = answer_generator
 
-    def handle_question(self, question: str) -> DialogueResult:
+    def _answer_after_failed_grounded(
+        self, question: str, chunks: list[KnowledgeChunk],
+        history: list[tuple[str, str]] | None = None,
+    ) -> str:
+        """Tiers 2 and 3 of the fallback chain described in handle_question(): the grounded call
+        either failed or honestly admitted it had nothing, so try a live search, and fall back to
+        the matched chunk verbatim only if that comes back empty too.
+
+        Extracted (2026-09-05) so the streaming path can reuse the identical policy - the whole
+        point of that chain is that it is ONE decision about what the robot says when grounding
+        fails, and a second copy for the streaming caller would be a second place to keep in
+        sync."""
+        print("[dialogue] falling through to a live search instead of the matched chunk "
+              f"verbatim (question={question!r}).")
+        try:
+            _, general_answer = self.answer_generator.classify_and_answer_general(
+                _question_with_context(question, history)
+            )
+        except Exception as exc:
+            print(f"[dialogue] live-search fallback also failed ({exc!r}).")
+            general_answer = ""
+
+        return general_answer or chunks[0].text
+
+    def handle_question_stream(
+        self, question: str, history: list[tuple[str, str]] | None = None
+    ) -> StreamingDialogueResult:
+        """Same routing as handle_question(), but the grounded-LLM answer comes back as a live
+        stream so Stage 06 can start speaking sentence one while sentence two is still being
+        generated.
+
+        WHY (2026-09-05): handle_question() cannot return until the model has produced the whole
+        answer, so Piper - which has streamed sentence-by-sentence since Stage 06 was written -
+        sat idle for the full generation (~1-2s) before the first word reached the speaker. That
+        silence is the single biggest thing that made the robot feel like a machine rather than a
+        person. Streaming moves time-to-first-word to roughly one sentence of generation.
+
+        Only the grounded-LLM path actually streams. Everything else returns its finished string
+        in the same shape, because there is nothing to gain:
+          - IDENTITY is an offline string lookup, already instant.
+          - The is_direct_answer fast path never calls an LLM at all.
+          - The general/unknown path has to parse a two-line format out of the reply before it
+            knows what the answer even is (see AnswerGenerator.classify_and_answer_general).
+        Callers therefore treat all four identically and just speak `pieces`.
+        """
+        identity_answer = detect_identity_answer(question)
+        if identity_answer is not None:
+            return StreamingDialogueResult(
+                intent=Intent.IDENTITY, used_chunks=[],
+                pieces=iter([identity_answer]), is_streaming=False,
+            )
+
+        chunks = self.kb.search(_contextualize(question, history))
+        streamer = getattr(self.answer_generator, "stream_grounded_answer", None)
+        # A generator may HAVE the method and still not be able to stream - ChainAnswerGenerator
+        # defines it unconditionally but can only deliver if one of its backends does. Taking the
+        # streaming route on a generator that can't would skip tier 1 of the fallback chain (the
+        # ordinary grounded call) and go straight to a live search, which is a quiet downgrade in
+        # answer quality. Generators that don't publish the property are taken at their word.
+        if streamer is not None and not getattr(self.answer_generator, "supports_streaming", True):
+            streamer = None
+
+        if chunks and not chunks[0].is_direct_answer and streamer is not None:
+            return StreamingDialogueResult(
+                intent=Intent.GENERAL_INFO, used_chunks=chunks,
+                pieces=self._stream_grounded(question, chunks, streamer, history),
+                is_streaming=True,
+            )
+
+        # No streaming route applies - run the ordinary logic and hand the finished answer back
+        # in the streaming shape. Deliberately re-running the whole of handle_question() rather
+        # than reimplementing the remaining branches here: one router, one set of rules.
+        result = self.handle_question(question, history)
+        return StreamingDialogueResult(
+            intent=result.intent, used_chunks=result.used_chunks,
+            pieces=iter([result.answer]), is_streaming=False,
+        )
+
+    def _stream_grounded(self, question: str, chunks: list[KnowledgeChunk], streamer,
+                         history: list[tuple[str, str]] | None = None):
+        """The streaming half of handle_question()'s three-tier fallback chain.
+
+        The safety property that must not be lost: a grounded answer which honestly says "I
+        don't have that information" has to trigger a live search instead of being spoken (see
+        _GROUNDED_NO_INFO_PHRASES). That is a judgement about the answer's CONTENT, so some of
+        the answer has to exist before it can be made - which is why the first sentence is
+        buffered and inspected before any of it is spoken, and only then does the rest stream
+        through untouched. Buffering one sentence costs a fraction of what waiting for the whole
+        answer did, and keeps the guarantee intact.
+
+        Once the first sentence is out we are committed: it is already audible, so a later
+        failure ends the answer where it stands rather than switching to a different one
+        mid-breath.
+        """
+        # One iterator, held across both phases - the first sentence is consumed from it and the
+        # remainder continues from exactly where that left off. (Calling the streamer a second
+        # time would start a whole new generation and speak the opening twice.)
+        stream = streamer(_question_with_context(question, history), chunks)
+
+        buffer = ""
+        failed = False
+        try:
+            for piece in stream:
+                buffer += piece
+                if _first_sentence_ready(buffer):
+                    break
+        except Exception as exc:
+            print(f"[dialogue] streamed grounded answer failed ({exc!r}).")
+            failed = True
+
+        if failed or not buffer.strip() or _looks_like_no_info(buffer):
+            # Nothing has been spoken yet, so falling back is still free - identical policy to
+            # the blocking path, via the same helper.
+            yield self._answer_after_failed_grounded(question, chunks, history)
+            return
+
+        yield buffer
+        try:
+            yield from stream
+        except Exception as exc:
+            print(f"[dialogue] streamed answer ended early ({exc!r}) - speaking what arrived.")
+
+    def handle_question(
+        self, question: str, history: list[tuple[str, str]] | None = None
+    ) -> DialogueResult:
         # Checked FIRST, before the knowledge base or any LLM call - these are fixed facts about
         # the robot itself (name, creator), not university content, and the explicit requirement
         # was that they answer correctly with no network at all. detect_identity_answer() is a
@@ -171,7 +428,8 @@ class DialogueManager:
         if identity_answer is not None:
             return DialogueResult(intent=Intent.IDENTITY, answer=identity_answer, used_chunks=[])
 
-        chunks = self.kb.search(question)
+        # Follow-ups are searched with the previous question prepended - see _contextualize().
+        chunks = self.kb.search(_contextualize(question, history))
         if chunks:
             # Fast path (added 2026-08-19): the best-matching chunk is already a finished,
             # spoken-ready sentence, so speak it as-is instead of paying a real 1-3 second LLM
@@ -210,32 +468,25 @@ class DialogueManager:
             # single-tier behavior.
             answer = None
             try:
-                answer = self.answer_generator.generate_grounded_answer(question, chunks)
+                answer = self.answer_generator.generate_grounded_answer(
+                    _question_with_context(question, history), chunks
+                )
             except Exception as exc:
                 print(f"[dialogue] grounded-answer generation failed ({exc!r}).")
 
             if answer and not _looks_like_no_info(answer):
                 return DialogueResult(intent=Intent.GENERAL_INFO, answer=answer, used_chunks=chunks)
 
-            print("[dialogue] falling through to a live search instead of the matched chunk "
-                  f"verbatim (question={question!r}).")
-            try:
-                _, general_answer = self.answer_generator.classify_and_answer_general(question)
-            except Exception as exc:
-                print(f"[dialogue] live-search fallback also failed ({exc!r}).")
-                general_answer = ""
-
-            if general_answer:
-                return DialogueResult(
-                    intent=Intent.GENERAL_INFO, answer=general_answer, used_chunks=chunks
-                )
-
             return DialogueResult(
-                intent=Intent.GENERAL_INFO, answer=chunks[0].text, used_chunks=chunks
+                intent=Intent.GENERAL_INFO,
+                answer=self._answer_after_failed_grounded(question, chunks, history),
+                used_chunks=chunks,
             )
 
         is_university_related, general_answer = (
-            self.answer_generator.classify_and_answer_general(question)
+            self.answer_generator.classify_and_answer_general(
+                _question_with_context(question, history)
+            )
         )
         intent = Intent.UNKNOWN if is_university_related else Intent.GENERAL_CHAT
         if general_answer:
@@ -450,3 +701,193 @@ if __name__ == "__main__":
           "robot itself are answered offline before the knowledge base is even searched, and a "
           "non-direct-answer chunk that can't be grounded (failure or honest 'I don't know') "
           "falls through to a live search before ever falling back to a raw fragment.")
+
+    # --- streaming route (2026-09-05) -----------------------------------------------------
+    # handle_question_stream() must make exactly the same decisions as handle_question(), just
+    # delivering the grounded answer incrementally. Three things are checked here, all of them
+    # ways the streaming path could quietly be WORSE than the blocking one it replaces:
+    #   1. it actually streams (more than one piece out of the generator, first piece early)
+    #   2. a streamed "I don't have that information" still falls through to the live search,
+    #      instead of being spoken - the safety property _GROUNDED_NO_INFO_PHRASES exists for
+    #   3. a backend with no streaming support still answers, via the blocking path
+    stream_kb = KnowledgeBase()
+    stream_kb.upsert(KnowledgeChunk(
+        chunk_id="scraped-msc-cs",
+        text=("The Master of Computer Science is a two year programme with intakes in January "
+              "and September."),
+        source_url="https://www.lincoln.edu.my/example-scraped-page/",
+        last_updated=0.0,
+    ))
+
+    class StreamingGenerator:
+        """Yields an answer word by word, the way a real LLM produces one."""
+
+        def __init__(self, answer: str):
+            self.answer = answer
+            self.stream_calls = 0
+
+        def generate_grounded_answer(self, question, chunks):
+            raise AssertionError(
+                "the blocking grounded call was used even though this backend can stream"
+            )
+
+        def stream_grounded_answer(self, question, chunks):
+            self.stream_calls += 1
+            for word in self.answer.split(" "):
+                yield word + " "
+
+        def classify_and_answer_general(self, question):
+            return True, "I checked the website and it's a two year programme."
+
+    gen = StreamingGenerator("It's a two year programme. Intakes are in January and September.")
+    r11 = DialogueManager(stream_kb, gen).handle_question_stream(
+        "how long is the master of computer science"
+    )
+    assert r11.is_streaming, "a streamable backend should have taken the streaming route"
+    assert r11.intent == Intent.GENERAL_INFO
+    pieces = list(r11.pieces)
+    answer_11 = "".join(pieces).strip()
+    print(f"Streamed grounded answer -> {len(pieces)} piece(s), answer={answer_11!r}")
+    assert "two year programme" in answer_11
+    assert "September" in answer_11, "the rest of the stream after the first sentence was lost"
+    assert len(pieces) > 1, (
+        "the whole answer arrived as one piece - the caller would wait for full generation "
+        "before speaking, which is exactly what streaming is here to avoid"
+    )
+    assert gen.stream_calls == 1, (
+        f"the backend was asked to generate {gen.stream_calls} times - the stream is being "
+        f"restarted, which would speak the opening of the answer twice"
+    )
+
+    class NoInfoStreamingGenerator(StreamingGenerator):
+        """Streams an honest "I don't have that" - must NOT be spoken; it has to fall through to
+        the live search, same as the blocking path does."""
+
+        def classify_and_answer_general(self, question):
+            return True, "I looked it up: intakes are in January and September."
+
+    r12 = DialogueManager(
+        stream_kb, NoInfoStreamingGenerator("I don't have that information in front of me.")
+    ).handle_question_stream("how long is the master of computer science")
+    answer_12 = "".join(r12.pieces).strip()
+    print(f"Streamed 'no info' -> answer={answer_12!r}")
+    assert "I looked it up" in answer_12, (
+        "a streamed 'I don't have that information' was spoken as the final answer instead of "
+        "triggering the live-search fallback"
+    )
+    assert "don't have that information" not in answer_12
+
+    class NonStreamingGenerator:
+        """No stream_grounded_answer() at all - the common case for older/simpler backends."""
+
+        def generate_grounded_answer(self, question, chunks):
+            return "It's a two year programme."
+
+        def classify_and_answer_general(self, question):
+            raise AssertionError("should have been answered from the chunks")
+
+    r13 = DialogueManager(stream_kb, NonStreamingGenerator()).handle_question_stream(
+        "how long is the master of computer science"
+    )
+    assert not r13.is_streaming
+    assert "".join(r13.pieces).strip() == "It's a two year programme."
+
+    # Identity still short-circuits before the knowledge base on the streaming path too.
+    r14 = DialogueManager(stream_kb, StreamingGenerator("x")).handle_question_stream(
+        "what is your name"
+    )
+    assert r14.intent == Intent.IDENTITY and not r14.is_streaming
+
+    print("\nOK: the streaming route makes the same decisions as the blocking one - it really "
+          "streams (so speech can start before generation finishes), it never restarts the "
+          "generation mid-answer, a streamed 'I don't have that information' still falls "
+          "through to a live search instead of being spoken, a backend that can't stream still "
+          "answers, and identity questions are still answered offline first.")
+
+    # A generator that advertises the method but cannot deliver (the ChainAnswerGenerator shape)
+    # must fall back to the BLOCKING grounded call, not skip it - see handle_question_stream().
+    class UnstreamableChain(StreamingGenerator):
+        supports_streaming = False
+
+        def generate_grounded_answer(self, question, chunks):
+            return "It's a two year programme."
+
+        def stream_grounded_answer(self, question, chunks):
+            raise AssertionError(
+                "the streaming route was taken on a generator that reported it cannot stream - "
+                "tier 1 of the fallback chain (the ordinary grounded call) would be skipped"
+            )
+
+    r15 = DialogueManager(stream_kb, UnstreamableChain("unused")).handle_question_stream(
+        "how long is the master of computer science"
+    )
+    assert not r15.is_streaming
+    assert "".join(r15.pieces).strip() == "It's a two year programme."
+    print("A chain that can't actually stream still uses the ordinary grounded call - OK")
+
+    # --- follow-up questions within one visit (2026-09-05) --------------------------------
+    # The second thing a person says is rarely self-contained. Before this, "how long is it?"
+    # after a question about a programme searched the knowledge base for the literal words "how
+    # long is it", matched something unrelated or nothing, and answered accordingly.
+    assert looks_like_follow_up("how long is it?")
+    assert looks_like_follow_up("What about the fees")
+    assert looks_like_follow_up("and the entry requirements")
+    assert looks_like_follow_up("is it accredited")
+    # ...but a self-contained question is NOT a follow-up, even when it contains "it".
+    assert not looks_like_follow_up("where is the library")
+    assert not looks_like_follow_up("how long is the master of computer science")
+    assert not looks_like_follow_up(
+        "is it true that Lincoln University College has campuses in several countries"
+    ), "a long question that merely contains 'it' was mistaken for a follow-up"
+    assert not looks_like_follow_up("")
+
+    hist = [("visitor", "Tell me about the Master of Computer Science"),
+            ("robot", "It's a two year programme with three intakes.")]
+    # Retrieval gets the subject back...
+    searched = _contextualize("how long is it?", hist)
+    assert "Master of Computer Science" in searched and "how long is it" in searched, searched
+    # ...but the ROBOT's answer is never folded into the search query - it is far longer than the
+    # question and would drown the follow-up's own meaning in the embedding.
+    assert "two year programme" not in searched, searched
+    # A self-contained question is searched exactly as asked.
+    assert _contextualize("where is the library", hist) == "where is the library"
+    assert _contextualize("how long is it?", None) == "how long is it?"
+
+    # The model gets the actual dialogue, so it can resolve the pronoun in its own words.
+    contextual = _question_with_context("how long is it?", hist)
+    assert "Student: Tell me about the Master of Computer Science" in contextual
+    assert "You: It's a two year programme" in contextual
+    assert contextual.rstrip().endswith("how long is it?"), contextual
+    assert _question_with_context("where is the library", None) == "where is the library"
+
+    # End to end: the follow-up must retrieve the programme chunk, not the library one.
+    followup_kb = KnowledgeBase()
+    followup_kb.upsert(KnowledgeChunk(
+        chunk_id="mcs",
+        text=("The Master of Computer Science is a two year programme with intakes in January, "
+              "May and September."),
+        source_url="https://www.lincoln.edu.my/mcs/", last_updated=0.0))
+    followup_kb.upsert(KnowledgeChunk(
+        chunk_id="library", text="The Library is on the second floor.",
+        source_url="facilities-directory:library", last_updated=0.0,
+        boost=0.15, is_direct_answer=True))
+
+    class EchoGenerator:
+        def generate_grounded_answer(self, question, chunks):
+            return chunks[0].text
+
+        def classify_and_answer_general(self, question):
+            return True, ""
+
+    dm_follow = DialogueManager(followup_kb, EchoGenerator())
+    blind = dm_follow.handle_question("how long is it?")
+    with_context = dm_follow.handle_question("how long is it?", history=hist)
+    print(f"Follow-up without history -> {blind.answer!r}")
+    print(f"Follow-up with history    -> {with_context.answer!r}")
+    assert "two year programme" in with_context.answer, (
+        "a follow-up still could not find what it was referring to"
+    )
+
+    print("\nOK: a follow-up question is searched with the subject it refers to, the robot's own "
+          "answer never pollutes that search, self-contained questions are left alone, and the "
+          "model receives the dialogue so it can resolve the pronoun itself.")

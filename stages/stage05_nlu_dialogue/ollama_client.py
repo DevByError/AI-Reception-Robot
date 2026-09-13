@@ -32,6 +32,7 @@ Ollama"). Run this file directly to check the server, the models, and the real l
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -131,8 +132,11 @@ def chat(prompt: str, system: str | None = None, temperature: float = 0.2,
          timeout_s: float = CHAT_TIMEOUT_S) -> str:
     """One non-streaming chat completion. Returns the assistant's text.
 
-    Non-streaming on purpose: Stage 06's TTS speaks a finished sentence, so streaming tokens
-    would only mean reassembling them here before handing the whole string over anyway.
+    Still here, and still the right call for everything that needs a COMPLETE answer before it
+    can act - classify_and_answer_general() has to parse a two-line format out of the response,
+    which is not something you can do halfway through. chat_stream() below is the variant for
+    the grounded path, where Stage 06 can start speaking sentence one while sentence two is
+    still being generated.
     """
     messages = []
     if system:
@@ -159,6 +163,61 @@ def chat(prompt: str, system: str | None = None, temperature: float = 0.2,
     if not content.strip():
         raise OllamaError(f"model {model!r} returned an empty response")
     return content.strip()
+
+
+def chat_stream(prompt: str, system: str | None = None, temperature: float = 0.2,
+                model: str = CHAT_MODEL, max_tokens: int = MAX_TOKENS,
+                timeout_s: float = CHAT_TIMEOUT_S):
+    """Same call as chat(), yielding the answer in pieces as the model produces them.
+
+    Added 2026-09-05 for the streaming answer path: Stage 06's LiveTTSSpeaker.speak_stream()
+    starts speaking as soon as the FIRST SENTENCE exists, so a local model that takes two
+    seconds to finish a three-sentence answer now starts talking after roughly the first one.
+    The note on chat() above ("streaming would only mean reassembling them here") was true while
+    the TTS could only accept a finished string; it can accept a live stream now, so the
+    reassembly happens at the sentence boundary in the speaker instead.
+
+    Ollama streams newline-delimited JSON objects, one per token-ish chunk. A malformed line is
+    skipped rather than raising: losing one fragment mid-sentence is a smaller failure than
+    aborting an answer the visitor is already hearing.
+    """
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "keep_alive": KEEP_ALIVE,
+        "options": {"temperature": temperature, "num_predict": max_tokens},
+    }
+
+    produced_anything = False
+    try:
+        with requests.post(
+            _url("/api/chat"), json=payload, timeout=timeout_s, stream=True
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except ValueError:
+                    continue
+                piece = data.get("message", {}).get("content", "")
+                if piece:
+                    produced_anything = True
+                    yield piece
+                if data.get("done"):
+                    break
+    except requests.RequestException as exc:
+        raise OllamaError(f"streaming chat request to {OLLAMA_HOST} failed: {exc}") from exc
+
+    if not produced_anything:
+        raise OllamaError(f"model {model!r} returned an empty streamed response")
 
 
 def embed(texts: list[str], is_query: bool = False, model: str = EMBED_MODEL,
