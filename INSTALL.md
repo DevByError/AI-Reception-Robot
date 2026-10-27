@@ -129,6 +129,27 @@ pip install -r stages\stage02_face_recognition\requirements.txt
 Each stage's `requirements.txt` explains *why* each pin is what it is (licensing, wheel
 availability, past version conflicts). The root `requirements.txt` is the same set flattened.
 
+**On a small or older computer, use the lite set instead** (no PyTorch, about 2GB less):
+
+```powershell
+pip install -r requirements-lite.txt
+```
+
+It has everything the robot uses by default. It leaves out only the fallbacks: YOLO person
+detection (`PRESENCE_BACKEND=yolo`), sentence-transformers (the ONNX copy of the same model is
+used instead), speaker diarization and the Stage 03 placeholder voice.
+
+**NVIDIA GPU (for example the GTX 1650):** Whisper uses it automatically once NVIDIA's CUDA
+libraries are installed (about 1.3GB, no CUDA Toolkit needed). Without them it runs on the CPU,
+more slowly, and the startup log says why.
+
+```powershell
+pip install -r requirements-gpu.txt
+```
+
+Startup then prints `[stt] Whisper is running on the GPU.` The versions in that file are pinned
+on purpose: the cuDNN version has to match the one Whisper's engine ships with.
+
 ### The opencv wrinkle
 
 `opencv-contrib-python` is a strict superset of `opencv-python`, and the two overwrite each
@@ -164,6 +185,16 @@ python stages\stage00_setup\test_speaker_device.py
 ---
 
 ## 4. Download the model weights
+
+**The new models, in one command** (Kokoro voice, streaming speech recognizer, end-of-turn
+model, ONNX sentence embeddings, wake word; about 370MB, checksums verified):
+
+```powershell
+python stages\stage00_setup\download_models.py
+```
+
+`--list` shows what is present. Anything missing falls back to the older component, and the
+startup log says which. The rest of this step covers the models that were already there.
 
 None of these are in the repository — they are large binaries with a one-command re-download, so
 they are gitignored. Around 170MB here, plus ~500MB more the first time Whisper and the
@@ -286,6 +317,19 @@ GROQ_API_KEY=...     # free daily quota, no card needed
 `ANTHROPIC_API_KEY` also works, but Claude is no longer the default pick — see
 `stages/stage05_nlu_dialogue/dialogue_manager_live.py`.
 
+The Groq key can also do the robot's hearing. Add `STT_CLOUD=groq` and each finished question is
+transcribed by Groq's Whisper large-v3, a much bigger model than the one on the laptop, while the
+local Whisper keeps doing the live partials and stays ready as the backup:
+
+```ini
+GROQ_API_KEY=...
+STT_CLOUD=groq
+```
+
+At startup the log says `[stt] Groq whisper-large-v3 is ready` (or why not), and each question
+shows `[stt] Groq (whisper-large-v3, 640ms)`. A recording of every question is then sent to Groq —
+see `docs/PRIVACY.md`.
+
 ---
 
 ## 8. Run it
@@ -304,8 +348,24 @@ a fresh scrape any time with:
 python stages\stage08_orchestrator\main_live.py --refresh
 ```
 
-Walk into frame, it greets you, ask a question out loud, it answers by voice. Say "no, that's
-all" to end the visit.
+Walk into frame and look at it for a second; it greets you. Ask a question out loud and it
+answers by voice. You can talk over it to interrupt. Say "no, that's all" to end the visit.
+
+The startup log prints a short report of what it found: which voice, which speech recognizer,
+whether echo cancellation is on, and the measured barge-in threshold. Every setting is described
+in `.env.example` (all optional). For a robot with no monitor, set `HEADLESS=true`. To start it
+automatically at boot, see `stages/stage09_deployment/README.md`.
+
+### Run the tests
+
+```powershell
+python -m pytest tests -m "not e2e"     # ~1 minute, no hardware needed
+python -m pytest tests                   # + the two simulated end-to-end visits (~3 minutes)
+```
+
+The end-to-end tests need the models from step 4. They play a whole visit through a simulated
+camera, microphone and speaker: greeting, a question, an interruption, a bystander, the wake word
+and the goodbye. See `docs/RESULTS.md` for the measured numbers.
 
 ### Trying a single stage on its own
 
@@ -370,6 +430,24 @@ rather than crashing, so this shows up as behaviour, not as an error. Re-run ste
 
 **Piper says the voice file is missing** — the download in step 4 landed in the wrong folder. It
 must be inside `stages/stage06_text_to_speech/`.
+
+**The robot interrupts itself, or you have to shout to interrupt it** — look at the startup line
+`[barge-in] this room returns the robot's own voice at RMS ...`. With echo cancellation on, it
+should be around 0.002-0.005. A much higher value means the microphone is very close to the
+speaker or the speaker distorts. Move them apart, lower the volume, or use a speakerphone with
+its own echo cancellation. `INTERRUPTION_ENABLED=false` switches barge-in off.
+
+**`[aec] echo cancellation unavailable`** — `pip install livekit==1.0.0 "protobuf<5"`. Without it
+the robot still works, but barge-in falls back to "talk louder than the speaker".
+
+**The wrong microphone or speaker is used** — run `python stages\stage00_setup\list_audio_devices.py`
+and set `MIC_DEVICE` / `SPEAKER_DEVICE` in `.env` to part of the device name.
+
+**`[audio] input overflow`** — the computer is too busy to read the microphone in time. Set
+`AUDIO_CAPTURE_PROCESS=true` (reads it in a separate process) and/or lower `VISION_FPS`.
+
+**The voice is Piper, not Kokoro** — the log says why: either the model is not downloaded (step 4)
+or this computer synthesizes Kokoro less than 2x faster than real time. `TTS_BACKEND=kokoro` forces it.
 
 ---
 

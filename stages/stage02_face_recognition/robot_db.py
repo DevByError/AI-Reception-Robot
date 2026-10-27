@@ -11,6 +11,12 @@ the data, and the deployed kiosk is expected to have a server it can point at. N
 MySQL-specific beyond the DDL dialect, so a different backend would only mean rewriting
 SCHEMA_STATEMENTS.
 
+SQLITE FALLBACK (added 2026-10-27): a robot without a MySQL server used to run with no memory
+at all - every enrolled face forgotten on exit. LUC_DB_BACKEND=auto (the default) now uses MySQL
+when it answers and otherwise a SQLite file, data/robot_memory.db, with the same tables and the
+same cascade deletes; nothing to install. LUC_DB_BACKEND=mysql or =sqlite forces one. Open the
+file with "DB Browser for SQLite" to inspect it the way Workbench is used for MySQL.
+
 --- WHAT IS STORED --------------------------------------------------------------------------
   robot_identity   the robot's own identity as field/value rows - its name, and who built it.
                    Stage 05's identity.py reads this instead of hard-coding the answers, so
@@ -44,7 +50,10 @@ Run this file directly to create the database and tables:
 from __future__ import annotations
 
 import os
+import re
+import sqlite3
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -55,11 +64,11 @@ import numpy as np
 try:
     import mysql.connector
     from mysql.connector import Error as MySQLError
-except ImportError as exc:  # pragma: no cover - a clearer message than a bare ImportError
-    raise ImportError(
-        "mysql-connector-python is not installed. Run:\n"
-        "    pip install -r stages/stage02_face_recognition/requirements.txt"
-    ) from exc
+except ImportError:  # only the SQLite backend is available then
+    mysql = None
+
+    class MySQLError(Exception):  # type: ignore[no-redef]
+        """Stand-in so `except MySQLError` still works without mysql-connector installed."""
 
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
@@ -265,6 +274,8 @@ class RobotDatabase:
     # --- connection ---------------------------------------------------------------------------
 
     def connect(self, create_database: bool = False) -> None:
+        if mysql is None:
+            raise MySQLError("mysql-connector-python is not installed")
         if create_database:
             self._create_database_if_missing()
         self._conn = mysql.connector.connect(
@@ -648,38 +659,255 @@ class RobotDatabase:
             return result
 
 
+SQLITE_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS robot_identity (
+        field      TEXT     NOT NULL PRIMARY KEY,
+        value      TEXT     NOT NULL,
+        updated_at DATETIME NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS people (
+        person_id     TEXT     NOT NULL PRIMARY KEY,
+        name          TEXT     NOT NULL,
+        consent_given INTEGER  NOT NULL DEFAULT 1,
+        first_seen    DATETIME NOT NULL,
+        last_seen     DATETIME NOT NULL,
+        visit_count   INTEGER  NOT NULL DEFAULT 1)""",
+    "CREATE INDEX IF NOT EXISTS idx_people_last_seen ON people (last_seen)",
+    """CREATE TABLE IF NOT EXISTS face_embeddings (
+        embedding_id INTEGER  PRIMARY KEY AUTOINCREMENT,
+        person_id    TEXT     NOT NULL REFERENCES people (person_id) ON DELETE CASCADE,
+        dim          INTEGER  NOT NULL,
+        vector       BLOB     NOT NULL,
+        created_at   DATETIME NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_embeddings_person ON face_embeddings (person_id, embedding_id)",
+    """CREATE TABLE IF NOT EXISTS conversations (
+        conversation_id INTEGER  PRIMARY KEY AUTOINCREMENT,
+        person_id       TEXT     NULL REFERENCES people (person_id) ON DELETE CASCADE,
+        started_at      DATETIME NOT NULL,
+        ended_at        DATETIME NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_conversations_person ON conversations (person_id, started_at)",
+    """CREATE TABLE IF NOT EXISTS person_facts (
+        fact_id                INTEGER  PRIMARY KEY AUTOINCREMENT,
+        person_id              TEXT     NOT NULL REFERENCES people (person_id) ON DELETE CASCADE,
+        fact                   TEXT     NOT NULL,
+        source_conversation_id INTEGER  NULL
+            REFERENCES conversations (conversation_id) ON DELETE SET NULL,
+        created_at             DATETIME NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_facts_person ON person_facts (person_id, created_at)",
+    """CREATE TABLE IF NOT EXISTS utterances (
+        utterance_id    INTEGER  PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER  NOT NULL
+            REFERENCES conversations (conversation_id) ON DELETE CASCADE,
+        turn_index      INTEGER  NOT NULL,
+        speaker         TEXT     NOT NULL CHECK (speaker IN ('visitor', 'robot')),
+        text            TEXT     NOT NULL,
+        intent          TEXT     NULL,
+        said_at         DATETIME NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_utterances_conversation ON utterances "
+    "(conversation_id, turn_index)",
+]
+
+SQLITE_FILE = PROJECT_ROOT / "data" / "robot_memory.db"
+
+sqlite3.register_adapter(datetime, lambda dt: dt.isoformat(sep=" "))
+sqlite3.register_converter("DATETIME", lambda raw: datetime.fromisoformat(raw.decode()))
+
+_UPSERT_RE = re.compile(r"ON DUPLICATE KEY UPDATE value = VALUES\(value\), "
+                        r"updated_at = VALUES\(updated_at\)")
+
+
+def _to_sqlite(sql: str) -> str:
+    """The handful of MySQL-isms RobotDatabase's statements use, in SQLite spelling. Every
+    other statement in this file is already plain SQL both understand (including the
+    `LIMIT offset, count` form)."""
+    sql = sql.replace("%s", "?").replace("INSERT IGNORE", "INSERT OR IGNORE")
+    return _UPSERT_RE.sub("ON CONFLICT(field) DO UPDATE SET value = excluded.value, "
+                          "updated_at = excluded.updated_at", sql)
+
+
+class _SQLiteCursor:
+    """Wraps a sqlite3 cursor so RobotDatabase's MySQL-flavoured statements run unchanged."""
+
+    def __init__(self, cur: sqlite3.Cursor):
+        self._cur = cur
+
+    def execute(self, sql, params=()):
+        return self._cur.execute(_to_sqlite(sql), params)
+
+    def executemany(self, sql, rows):
+        return self._cur.executemany(_to_sqlite(sql), rows)
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+
+class SQLiteRobotDatabase(RobotDatabase):
+    """The same data-access layer on a local SQLite file - see "SQLITE FALLBACK" above.
+
+    Every query method is inherited unchanged; only connecting, the schema and the cursor
+    differ. One connection shared by the camera and conversation threads, serialized by a lock
+    (the MySQL backend gets the same effect from the server)."""
+
+    backend = "sqlite"
+
+    def __init__(self, path: Path | str | None = None):
+        self.path = Path(path) if path else SQLITE_FILE
+        self.config = DBConfig(host="", port=0, user="", password="", database=str(self.path))
+        self._conn = None
+        self._lock = threading.RLock()
+
+    def connect(self, create_database: bool = False) -> None:
+        if str(self.path) != ":memory:":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self.path), detect_types=sqlite3.PARSE_DECLTYPES,
+                                     check_same_thread=False, timeout=10)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute("PRAGMA journal_mode = WAL")
+
+    def ensure_schema(self) -> None:
+        if self._conn is None:
+            self.connect()
+        with self._cursor() as cur:
+            for statement in SQLITE_SCHEMA:
+                cur.execute(statement)
+
+    @contextmanager
+    def _cursor(self, dictionary: bool = False):
+        with self._lock:
+            if self._conn is None:
+                self.connect()
+            cur = self._conn.cursor()
+            try:
+                yield _SQLiteCursor(cur)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            finally:
+                cur.close()
+
+
+RobotDatabase.backend = "mysql"
+
+
 def connect_or_none(verbose: bool = True, **overrides):
-    """Best-effort connect for the robot itself: returns None instead of raising when MySQL
-    isn't reachable.
+    """Best-effort connect for the robot itself: returns None instead of raising when no
+    database can be opened.
 
     A kiosk that refuses to greet anybody because the database is down is a worse outcome than
     one that greets everybody as a stranger for an afternoon - Stage 09's graceful-degradation
     rule. The failure is printed loudly so it is never mistaken for "nobody has enrolled yet".
+
+    LUC_DB_BACKEND: auto (MySQL if it answers, else the SQLite file), mysql, or sqlite.
     """
+    load_env_file()
+    backend = os.environ.get("LUC_DB_BACKEND", "auto").strip().lower() or "auto"
+    if backend not in ("auto", "mysql", "sqlite"):
+        print(f"[db] LUC_DB_BACKEND={backend!r} is not auto/mysql/sqlite - using auto.")
+        backend = "auto"
+
+    if backend in ("auto", "mysql"):
+        try:
+            db = RobotDatabase(**overrides)
+            db.ensure_schema()
+            return db
+        except MySQLError as exc:
+            if backend == "mysql":
+                if verbose:
+                    print(f"[db] MySQL unavailable ({exc}) - running WITHOUT persistent memory "
+                          f"this session: faces enrolled now will be forgotten on exit, and no "
+                          f"conversation will be recorded. Check the server and the settings in "
+                          f".env, or set LUC_DB_BACKEND=auto to fall back to a local file.")
+                return None
+            if verbose:
+                print(f"[db] MySQL unavailable ({exc}) - using the local SQLite file "
+                      f"{SQLITE_FILE} instead (LUC_DB_BACKEND=auto).")
+
     try:
-        db = RobotDatabase(**overrides)
+        db = SQLiteRobotDatabase(os.environ.get("LUC_DB_SQLITE_PATH") or None)
         db.ensure_schema()
+        if verbose and backend == "sqlite":
+            print(f"[db] using the local SQLite file {db.path}")
         return db
-    except MySQLError as exc:
+    except Exception as exc:  # noqa: BLE001
         if verbose:
-            print(f"[db] MySQL unavailable ({exc}) - running WITHOUT persistent memory this "
-                  f"session: faces enrolled now will be forgotten on exit, and no conversation "
-                  f"will be recorded. Check the server and the settings in .env")
+            print(f"[db] could not open the SQLite file ({exc!r}) - running WITHOUT persistent "
+                  f"memory this session.")
         return None
 
 
-if __name__ == "__main__":
+def self_test_round_trip(db: RobotDatabase) -> None:
+    """A temporary person, conversation and facts written, read back and cascade-deleted.
+    Works on either backend (tests/test_robot_db.py runs it on SQLite)."""
     import time
     import uuid
 
-    db = RobotDatabase()
-    print(f"Connecting to mysql://{db.config.user}@{db.config.host}:{db.config.port}"
-          f"/{db.config.database} ...")
+    print("\nRunning a full round trip (a temporary person, then deleting them)...")
+    now = time.time()
+    person_id = str(uuid.uuid4())
+    sample = np.random.rand(1, 128).astype("float32")
+
+    db.insert_person(person_id, "Self Test", True, now, now, 1, [sample])
+    conv_id = db.start_conversation(person_id)
+    db.log_utterance(conv_id, 0, "robot", "Welcome back, Self Test!")
+    db.log_utterance(conv_id, 1, "visitor", "Where is the library?")
+    db.log_utterance(conv_id, 2, "robot", "It is on the second floor.",
+                     intent="GENERAL_INFO")
+    db.end_conversation(conv_id)
+
+    loaded = [p for p in db.load_people() if p["person_id"] == person_id]
+    assert len(loaded) == 1, "the person did not come back out of the database"
+    restored = loaded[0]["embeddings"][0]
+    assert restored.shape == (1, 128), f"wrong embedding shape: {restored.shape}"
+    assert np.allclose(restored, sample), "the embedding did not survive the round trip"
+    print(f"  embedding round trip OK (shape {restored.shape}, exact match)")
+
+    transcript = db.conversation_transcript(conv_id)
+    assert len(transcript) == 3, f"expected 3 utterances, got {len(transcript)}"
+    for row in transcript:
+        print(f"  [{row['said_at']}] {row['speaker']:<7} {row['text']!r}")
+
+    # --- what the robot remembers about them (person_facts, 2026-09-05) ------------------
+    added = db.add_person_facts(
+        person_id,
+        ["Is applying for the Master of Computer Science.", "Prefers the January intake."],
+        conversation_id=conv_id,
+    )
+    assert added == 2, f"expected 2 facts inserted, got {added}"
+    # Same fact again (different case) must not accumulate a second row.
+    assert db.add_person_facts(person_id, ["prefers the January intake."]) == 0, \
+        "a duplicate fact was stored again - add_person_facts() is not de-duplicating"
+    facts = db.person_facts(person_id)
+    assert len(facts) == 2, f"expected 2 facts back, got {len(facts)}"
+    assert facts[0]["source_conversation_id"] == conv_id, \
+        "a fact lost the conversation it came from - it can no longer be audited"
+    for row in facts:
+        print(f"  remembered: {row['fact']!r}")
+
+    assert db.delete_person(person_id), "delete_person() reported nothing deleted"
+    assert not db.recent_conversations(person_id), \
+        "the conversation outlived the person - ON DELETE CASCADE is not working"
+    assert not db.person_facts(person_id), \
+        "remembered facts outlived the person - the privacy cascade misses person_facts, " \
+        "which is the most sensitive table of the set (free text about a real student)"
+    print("  cascade delete OK (person, embedding, conversation, transcript and remembered "
+          "facts all gone)")
+    print("\nOK: persistence, retrieval and the right-to-be-forgotten cascade all work.")
+
+
+
+if __name__ == "__main__":
+    db = (SQLiteRobotDatabase(os.environ.get("LUC_DB_SQLITE_PATH") or None)
+          if "--sqlite" in sys.argv else RobotDatabase())
+    where = (db.path if isinstance(db, SQLiteRobotDatabase) else
+             f"mysql://{db.config.user}@{db.config.host}:{db.config.port}/{db.config.database}")
+    print(f"Connecting to {where} ...")
     try:
         db.ensure_schema()
     except MySQLError as exc:
         print(f"\nFAILED: {exc}\n\nSet the connection details in {ENV_FILE} (copy "
-              f"{PROJECT_ROOT / '.env.example'}), or via LUC_DB_* environment variables.")
+              f"{PROJECT_ROOT / '.env.example'}), or via LUC_DB_* environment variables - or "
+              f"run with --sqlite to use the local file instead.")
         sys.exit(1)
 
     print("OK: database and tables are ready.")
@@ -687,56 +915,6 @@ if __name__ == "__main__":
         print(f"  {table:<16} {n} row(s)")
 
     if "--self-test" in sys.argv:
-        print("\nRunning a full round trip (a temporary person, then deleting them)...")
-        now = time.time()
-        person_id = str(uuid.uuid4())
-        sample = np.random.rand(1, 128).astype("float32")
-
-        db.insert_person(person_id, "Self Test", True, now, now, 1, [sample])
-        conv_id = db.start_conversation(person_id)
-        db.log_utterance(conv_id, 0, "robot", "Welcome back, Self Test!")
-        db.log_utterance(conv_id, 1, "visitor", "Where is the library?")
-        db.log_utterance(conv_id, 2, "robot", "It is on the second floor.",
-                         intent="GENERAL_INFO")
-        db.end_conversation(conv_id)
-
-        loaded = [p for p in db.load_people() if p["person_id"] == person_id]
-        assert len(loaded) == 1, "the person did not come back out of the database"
-        restored = loaded[0]["embeddings"][0]
-        assert restored.shape == (1, 128), f"wrong embedding shape: {restored.shape}"
-        assert np.allclose(restored, sample), "the embedding did not survive the round trip"
-        print(f"  embedding round trip OK (shape {restored.shape}, exact match)")
-
-        transcript = db.conversation_transcript(conv_id)
-        assert len(transcript) == 3, f"expected 3 utterances, got {len(transcript)}"
-        for row in transcript:
-            print(f"  [{row['said_at']}] {row['speaker']:<7} {row['text']!r}")
-
-        # --- what the robot remembers about them (person_facts, 2026-09-05) ------------------
-        added = db.add_person_facts(
-            person_id,
-            ["Is applying for the Master of Computer Science.", "Prefers the January intake."],
-            conversation_id=conv_id,
-        )
-        assert added == 2, f"expected 2 facts inserted, got {added}"
-        # Same fact again (different case) must not accumulate a second row.
-        assert db.add_person_facts(person_id, ["prefers the January intake."]) == 0, \
-            "a duplicate fact was stored again - add_person_facts() is not de-duplicating"
-        facts = db.person_facts(person_id)
-        assert len(facts) == 2, f"expected 2 facts back, got {len(facts)}"
-        assert facts[0]["source_conversation_id"] == conv_id, \
-            "a fact lost the conversation it came from - it can no longer be audited"
-        for row in facts:
-            print(f"  remembered: {row['fact']!r}")
-
-        assert db.delete_person(person_id), "delete_person() reported nothing deleted"
-        assert not db.recent_conversations(person_id), \
-            "the conversation outlived the person - ON DELETE CASCADE is not working"
-        assert not db.person_facts(person_id), \
-            "remembered facts outlived the person - the privacy cascade misses person_facts, " \
-            "which is the most sensitive table of the set (free text about a real student)"
-        print("  cascade delete OK (person, embedding, conversation, transcript and remembered "
-              "facts all gone)")
-        print("\nOK: persistence, retrieval and the right-to-be-forgotten cascade all work.")
+        self_test_round_trip(db)
 
     db.close()

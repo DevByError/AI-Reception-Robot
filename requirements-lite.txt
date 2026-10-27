@@ -1,0 +1,47 @@
+# LUC-Robot on a small computer: everything the robot needs, without PyTorch (~2GB less).
+#
+#     pip install -r requirements-lite.txt
+#     python stages/stage00_setup/download_models.py
+#
+# Leaves out only the fallbacks: YOLO person detection (PRESENCE_BACKEND=yolo - the default
+# finds people with the YuNet face detector), sentence-transformers (the knowledge base uses the
+# ONNX copy of the same MiniLM model), speaker diarization and the Stage 03 placeholder voice.
+# Everything else is the same as requirements.txt - keep the two in sync.
+
+# --- base ---
+sounddevice==0.4.6
+numpy==1.26.4
+pyyaml==6.0.1
+
+# --- seeing ---
+opencv-contrib-python==4.9.0.80
+mediapipe==0.10.18
+mysql-connector-python==9.1.0
+
+# --- hearing ---
+faster-whisper==1.0.3
+ctranslate2==4.8.4
+webrtcvad-wheels==2.0.14
+noisereduce==3.0.2
+rapidfuzz==3.6.1
+livekit==1.0.0
+protobuf==4.25.9
+sherpa-onnx==2.0.1
+sentencepiece==0.2.2
+soundfile==0.14.0
+scipy==1.15.3
+openwakeword==0.6.0
+
+# --- thinking ---
+onnxruntime==1.23.2
+tokenizers==0.22.2
+google-genai==2.18.1
+groq==0.11.0
+anthropic==0.122.0
+requests==2.32.3
+beautifulsoup4==4.12.3
+
+# --- speaking ---
+piper-tts==1.6.0
+phonemizer-fork==3.3.1
+espeakng-loader==0.2.4

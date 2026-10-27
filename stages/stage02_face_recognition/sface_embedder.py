@@ -111,6 +111,9 @@ class FaceDetection:
         return ", ".join(problems)
 
 
+REFINE_CROP = 1.6   # crop side for describe_faces(), as a multiple of the face box's longer side
+
+
 class SFaceEmbedder:
     def __init__(self, frame_size: tuple[int, int] = (640, 480)):
         if not DETECTION_MODEL.exists() or not RECOGNITION_MODEL.exists():
@@ -131,10 +134,65 @@ class SFaceEmbedder:
             self._last_size = (w, h)
 
         _, faces = self.detector.detect(frame)
-        results: list[FaceDetection] = []
         if faces is None:
-            return results
+            return []
+        return self._describe_rows(frame, faces)
 
+    def describe_faces(self, frame, faces) -> list[FaceDetection]:
+        """Embeddings for faces ANOTHER detector already found - (bbox, landmarks, score)
+        tuples in full-frame pixels, e.g. from stage01's face_presence.py. Added 2026-10-27.
+
+        Skips this class's own YuNet pass, which at 1280x720 measured ~146ms - the single most
+        expensive step left in the camera loop once YOLO was gone, and pure duplication when
+        presence detection has just found the same faces (with the same landmarks, which are
+        all SFace's alignment needs).
+
+        Landmarks found on a downscaled frame are a pixel or two off at full size, and SFace's
+        alignment is sensitive to that (measured: cosine 0.87-0.94 against the full-resolution
+        result for the same image). So each face is re-detected in a small full-resolution crop
+        around it first - a few milliseconds - which gives the same landmarks a full-frame pass
+        would. If that finds nothing, the given landmarks are used as they are.
+
+        The crop size matters more than expected: YuNet's landmarks on a small face vary with
+        how much context surrounds it. Measured on 25 placements of one face (sizes 200-460px,
+        five positions), similarity to an enrolled sample: full-frame detection mean 0.856,
+        worst 0.397; this path with a 1.6x crop mean 0.882, worst 0.780 (2.0x: 0.830 / 0.419).
+        The match threshold is 0.363.
+        """
+        rows = []
+        fh_, fw_ = frame.shape[:2]
+        for bbox, landmarks, score in faces:
+            x, y, w, h = bbox
+            side = int(max(w, h) * REFINE_CROP)
+            cx, cy = x + w // 2, y + h // 2
+            x0, y0 = max(0, cx - side // 2), max(0, cy - side // 2)
+            x1, y1 = min(fw_, x0 + side), min(fh_, y0 + side)
+            refined = None
+            crop = frame[y0:y1, x0:x1]
+            if crop.size:
+                ch, cw = crop.shape[:2]
+                if (cw, ch) != self._last_size:
+                    self.detector.setInputSize((cw, ch))
+                    self._last_size = (cw, ch)
+                _, found = self.detector.detect(np.ascontiguousarray(crop))
+                if found is not None and len(found):
+                    best = max(found, key=lambda r: float(r[14]))
+                    # Row layout [x, y, w, h, 5 x (lx, ly), score]: shift the box corner and
+                    # the landmarks into frame coordinates, leave w and h alone.
+                    refined = best.copy()
+                    refined[0] += x0
+                    refined[1] += y0
+                    refined[4:14:2] += x0
+                    refined[5:14:2] += y0
+            if refined is not None:
+                rows.append(refined)
+            elif landmarks and len(landmarks) >= 5:
+                flat = [float(v) for point in landmarks[:5] for v in point]
+                rows.append(np.array([x, y, w, h, *flat, score], dtype=np.float32))
+        return self._describe_rows(frame, rows)
+
+    def _describe_rows(self, frame, faces) -> list[FaceDetection]:
+        results: list[FaceDetection] = []
         for face_row in faces:
             x, y, fw, fh = face_row[:4].astype(int)
             aligned = self.recognizer.alignCrop(frame, face_row)

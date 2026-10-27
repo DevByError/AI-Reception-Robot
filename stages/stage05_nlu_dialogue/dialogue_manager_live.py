@@ -57,7 +57,10 @@ Run: python dialogue_manager_live.py
 from __future__ import annotations
 
 import os
+import re
 import sys
+import threading  # ChainAnswerGenerator's background backend re-check
+import time
 from pathlib import Path
 
 # Loaded before GEMINI_API_KEY/GROQ_API_KEY are read in _build_answer_generator(), so an API key
@@ -65,6 +68,7 @@ from pathlib import Path
 # environment variable - see stage00_setup/project_env.py.
 sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
 from project_env import load_env_file  # noqa: E402
+from realtime_config import RT  # noqa: E402
 
 load_env_file()
 
@@ -78,7 +82,9 @@ CLAUDE_MODEL = (
 # voice-interaction goal; swap to "claude-sonnet-5"
 # if answer quality needs to be better and the extra
 # latency/cost is acceptable
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# From GROQ_MODEL in .env (default llama-3.3-70b-versatile). llama-3.1-8b-instant is faster
+# still and fine for short receptionist answers if you want to squeeze the last 100ms.
+GROQ_MODEL = RT.GROQ_MODEL
 GEMINI_MODEL = (
     "gemini-3.7-flash"  # confirmed current/GA model name via Google's own docs
     # (ai.google.dev) as of 2026-08 - fast tier, matches this
@@ -277,6 +283,17 @@ class ClaudeAnswerGenerator:
             for piece in stream.text_stream:
                 yield piece
 
+    def stream_general_answer(self, question: str):
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=300,
+            system=GENERAL_CLASSIFY_PROMPT,
+            messages=[{"role": "user", "content": question}],
+            temperature=0.7,
+        ) as stream:
+            for piece in stream.text_stream:
+                yield piece
+
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
         message = self.client.messages.create(
             model=self.model,
@@ -287,6 +304,36 @@ class ClaudeAnswerGenerator:
         )
         raw = message.content[0].text.strip()
         return _parse_university_related(raw), _parse_answer(raw)
+
+
+def _brief(exc: Exception) -> str:
+    """An API error in one short line - the status and nothing else.
+
+    A raw google-genai error repr is a full JSON body with help links in it, and three of those
+    per question turns a console log into something nobody reads. The full text is still printed
+    where it is genuinely diagnostic (the final give-up path); this is for the routine
+    "that backend is down, moving on" lines.
+    """
+    text = str(exc)
+    for code, label in (("429", "quota exhausted"), ("503", "model overloaded"),
+                        ("500", "server error"), ("401", "bad API key"),
+                        ("403", "access denied")):
+        if code in text[:200]:
+            return f"{code} {label}"
+    return type(exc).__name__
+
+
+def _is_backend_unavailable(exc: Exception) -> bool:
+    """Whether this failure means the whole backend is out, rather than one feature of it.
+
+    Kept as a string check on purpose. The alternative is importing google.genai.errors and
+    matching exception classes, which would tie this decision to one SDK - and the same three
+    status codes mean the same three things for Groq and for Claude, both of which are still
+    live code paths in this file. A status code in the message is the one thing they all share.
+    """
+    text = str(exc)[:200]
+    return any(code in text for code in ("429", "503", "500", "RESOURCE_EXHAUSTED",
+                                         "UNAVAILABLE"))
 
 
 class GeminiAnswerGenerator:
@@ -307,8 +354,85 @@ class GeminiAnswerGenerator:
                 "No Gemini API key found - set the GEMINI_API_KEY environment variable (see "
                 "README.md for how to get one from Google AI Studio)."
             )
-        self.client = genai.Client(api_key=key)
+
+        # --- WHY THIS CLIENT HAS AN EXPLICIT TIMEOUT (measured 2026-09-17) -------------------
+        # The google-genai SDK retries 429 and 503 INTERNALLY, with exponential backoff, before
+        # it raises anything at all. That is sensible for a batch job and catastrophic for a
+        # robot with somebody standing in front of it: measured here, ONE plain call against a
+        # quota-exhausted key took 70.6 SECONDS to fail. The fallback chain below is built on
+        # the assumption that a dead backend fails quickly and the next one takes over - and
+        # that assumption was simply false, so the chain never got its turn. A visitor asking
+        # "how are you today?" waited 249 seconds for an answer that Ollama, already installed
+        # and warm, could produce in 0.4.
+        #
+        # So: a hard wall-clock ceiling per call. Past it the call raises, the chain moves on to
+        # Ollama, and the visitor gets an answer. The number is a latency budget, not a guess
+        # about how long Gemini "should" take - STAGES.md's own target for the whole turn is
+        # 2-3 seconds, so anything past a few seconds has already lost the race to the local
+        # model whatever it eventually returns.
+        #
+        # THE 10-SECOND FLOOR IS THE API'S, NOT A PREFERENCE. Gemini rejects a shorter deadline
+        # outright:
+        #     400 INVALID_ARGUMENT - Manually set deadline 8s is too short.
+        #                            Minimum allowed deadline is 10s.
+        # and since that is a 400 rather than a timeout, it fails EVERY call, including the ones
+        # that would have succeeded. Found here by setting 8s and watching Gemini stop answering
+        # entirely while the log filled with 400s - a "fix" that made the backend permanently
+        # unavailable instead of merely slow. Anything below the floor is raised to it and said
+        # out loud, rather than being passed through to fail.
+        #
+        # 10s is therefore the worst case for ONE call, not for every question: the circuit
+        # breaker in ChainAnswerGenerator parks a backend after two consecutive failures, so a
+        # sustained outage costs that 10s roughly once every BREAKER_COOLDOWN_S and every other
+        # question goes straight to the local model.
+        #
+        # Tune with GEMINI_TIMEOUT_S (seconds). Raise it if you are on a slow link and see
+        # healthy calls being cut off; the [gemini] log line names the timeout when that happens.
+        GEMINI_MIN_TIMEOUT_S = 10.0
+        requested = float(os.environ.get("GEMINI_TIMEOUT_S")
+                          or os.environ.get("LUC_GEMINI_TIMEOUT_S") or GEMINI_MIN_TIMEOUT_S)
+        timeout_s = max(requested, GEMINI_MIN_TIMEOUT_S)
+        if requested < GEMINI_MIN_TIMEOUT_S:
+            print(f"[gemini] GEMINI_TIMEOUT_S={requested:g}s is below the API's own "
+                  f"{GEMINI_MIN_TIMEOUT_S:g}s minimum, which it rejects with a 400 on every "
+                  f"call - using {timeout_s:g}s instead.")
+        self.timeout_s = timeout_s
+        try:
+            from google.genai import types as _types
+
+            # http_options.timeout is in MILLISECONDS.
+            self.client = genai.Client(
+                api_key=key,
+                http_options=_types.HttpOptions(timeout=int(timeout_s * 1000)),
+            )
+        except Exception as exc:  # noqa: BLE001 - an SDK too old to accept http_options
+            print(f"[gemini] could not set a {timeout_s:.0f}s call timeout ({exc!r}) - falling "
+                  f"back to the SDK default, which can hang for over a minute on a 429/503. "
+                  f"Upgrade with: pip install -U google-genai")
+            self.client = genai.Client(api_key=key)
         self.model = model
+
+    def health_check(self) -> None:
+        """A minimal call whose only job is to find out whether this key can talk to Gemini at
+        all right now. Raises the API's own error if not; returns None if it can.
+
+        Called from ChainAnswerGenerator's background prober (never from a visitor's question),
+        which is the whole point: when the quota is exhausted, SOMETHING has to keep asking
+        whether it has come back, and that something must not be a person standing in front of
+        the robot waiting for an answer.
+
+        Deliberately as small a request as the API allows. The response TEXT is not read and
+        does not matter - a truncated reply still proves the key, the quota and the model are
+        all working, which is the only question being asked. What matters is whether this
+        raises.
+        """
+        from google.genai import types
+
+        self.client.models.generate_content(
+            model=self.model,
+            contents="ping",
+            config=types.GenerateContentConfig(max_output_tokens=16, temperature=0.0),
+        )
 
     def generate_grounded_answer(
         self, question: str, chunks: list[KnowledgeChunk]
@@ -387,13 +511,38 @@ class GeminiAnswerGenerator:
             "max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS,
         }
         try:
-            search_tool = types.Tool(google_search=types.GoogleSearch())
+            if RT.GEMINI_SEARCH:
+                search_tool = types.Tool(google_search=types.GoogleSearch())
+                config = types.GenerateContentConfig(**base_config, tools=[search_tool])
+            else:
+                # GEMINI_SEARCH=false (the default since 2026-10-27): a plain call. Search adds
+                # seconds and is separately metered; with Groq answering first, Gemini is the
+                # second opinion rather than the main voice.
+                config = types.GenerateContentConfig(**base_config)
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=question,
-                config=types.GenerateContentConfig(**base_config, tools=[search_tool]),
+                config=config,
             )
         except Exception as exc:
+            # The retry is only worth making when dropping SEARCH could plausibly be the
+            # difference. Search grounding is separately metered, so "the search quota is used
+            # up" is a real and common failure that a plain call does fix - that is why this
+            # retry exists and it stays.
+            #
+            # But a plain 429 on the ACCOUNT, or a 503 on the model itself, has nothing to do
+            # with search: the second call fails exactly like the first, and the only thing it
+            # reliably adds is another full timeout of silence with somebody standing there.
+            # Measured 2026-09-17, before the client timeout above existed: two calls, 70s
+            # each, on a question the already-installed local model answered in 0.4s.
+            #
+            # So: skip the retry when the error says the whole backend is unavailable, and go
+            # straight to the next generator in the chain (Ollama), which is the entire reason
+            # the chain exists.
+            if _is_backend_unavailable(exc):
+                print(f"[gemini] backend unavailable ({_brief(exc)}) - not retrying without "
+                      f"search (it would fail the same way); handing over to the next backend.")
+                return True, ""
             print(f"[gemini] search-grounded call failed ({exc!r}) - retrying without search...")
             try:
                 response = self.client.models.generate_content(
@@ -413,6 +562,31 @@ class GeminiAnswerGenerator:
         raw = response.text.strip()
         return _parse_university_related(raw), _parse_answer(raw)
 
+    def stream_general_answer(self, question: str):
+        """Streamed general answer. With GEMINI_SEARCH on, search grounding is not streamed
+        (the SDK returns it whole), so the finished reply is handed back as one piece - the
+        caller treats both shapes the same."""
+        if RT.GEMINI_SEARCH:
+            related, answer = self.classify_and_answer_general(question)
+            if answer:
+                yield f"UNIVERSITY_RELATED: {'yes' if related else 'no'}\nANSWER: {answer}"
+            return
+        from google.genai import types
+
+        stream = self.client.models.generate_content_stream(
+            model=self.model,
+            contents=question,
+            config=types.GenerateContentConfig(
+                system_instruction=GENERAL_CLASSIFY_PROMPT,
+                temperature=0.7,
+                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+            ),
+        )
+        for chunk in stream:
+            piece = getattr(chunk, "text", None)
+            if piece:
+                yield piece
+
 
 class GroqAnswerGenerator:
     """Implements the same AnswerGenerator protocol as MockAnswerGenerator
@@ -428,8 +602,41 @@ class GroqAnswerGenerator:
                 "No Groq API key found - set the GROQ_API_KEY environment variable (see "
                 "README.md for how to get a free key)."
             )
-        self.client = Groq(api_key=key)
+        # A short timeout and at most one retry, for the same reason Gemini has one (see its
+        # comment): the SDK's own retry-with-backoff is right for a batch job and wrong for a
+        # visitor standing in front of the robot. A failed call should hand over to the next
+        # backend in under ten seconds, not after a minute of retries.
+        try:
+            self.client = Groq(api_key=key, timeout=8.0, max_retries=1)
+        except TypeError:  # a very old SDK without those arguments
+            self.client = Groq(api_key=key)
         self.model = model
+
+    def health_check(self) -> None:
+        """Smallest possible call - lets ChainAnswerGenerator park and re-check Groq the same
+        way it does Gemini. Raises on failure, returns None when Groq is answering."""
+        self.client.chat.completions.create(
+            model=self.model, messages=[{"role": "user", "content": "ping"}], max_tokens=1,
+        )
+
+    def stream_general_answer(self, question: str):
+        """GENERAL_CLASSIFY_PROMPT's two-line reply, streamed. The caller strips the
+        UNIVERSITY_RELATED line as soon as it arrives and speaks the answer as it generates."""
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": GENERAL_CLASSIFY_PROMPT},
+                {"role": "user", "content": question},
+            ],
+            temperature=0.7,
+            stream=True,
+        )
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            piece = chunk.choices[0].delta.content
+            if piece:
+                yield piece
 
     def generate_grounded_answer(
         self, question: str, chunks: list[KnowledgeChunk]
@@ -681,6 +888,11 @@ class OllamaAnswerGenerator:
         )
         return _parse_university_related(raw), _parse_answer(raw)
 
+    def stream_general_answer(self, question: str):
+        yield from self._client.chat_stream(
+            question, system=GENERAL_CLASSIFY_PROMPT, temperature=0.7, model=self.model
+        )
+
 
 class ChainAnswerGenerator:
     """Tries several real generators in order and uses the first one that actually produces an
@@ -702,6 +914,252 @@ class ChainAnswerGenerator:
         if not generators:
             raise ValueError("ChainAnswerGenerator needs at least one generator")
         self.generators = generators
+        # --- the circuit breaker (added 2026-09-17, from a measured 249s answer) -------------
+        # A chain that re-tries a dead backend on every question pays that backend's failure
+        # cost on every question. When a Gemini key is out of quota it stays out of quota - the
+        # quota resets on Google's clock, not between two sentences - so the first visitor
+        # pays the timeout, and so does the second, and the third, for the whole day.
+        #
+        # So after BREAKER_THRESHOLD consecutive failures a backend is PARKED - taken out of the
+        # chain entirely - and the robot runs on the next one down (Ollama) with no waiting at
+        # all. Nothing about a visitor's question ever touches a parked backend again.
+        #
+        # HOW IT COMES BACK, and why this is a background thread rather than a timer checked on
+        # the next question. The obvious design is "park it for N seconds, then let the next
+        # question try it again", and that was the first version of this. It is wrong for the
+        # reason the user put plainly: the retry still lands on somebody's question. Whoever
+        # happens to ask the first question after the cooldown expires pays the full 10-second
+        # timeout, and if the quota is still exhausted they pay it again every cooldown, all
+        # day. The robot is fast for most people and mysteriously slow for a few.
+        #
+        # So the re-check runs on its own thread instead, every RECHECK_INTERVAL_S, using a
+        # deliberately tiny health_check() call. A visitor's question NEVER probes a parked
+        # backend. When the probe finally succeeds - the quota reset, the outage ended, billing
+        # was enabled - the backend is un-parked and the very next question gets the better
+        # model, with nobody having waited for the discovery.
+        #
+        # Backends with no health_check() (Ollama) are never parked in the first place: the
+        # local model is the floor of the chain, and parking the floor would leave nothing.
+        #
+        # Deliberately per-INSTANCE rather than global: the self-tests build throwaway chains
+        # from deliberately-broken stubs, and a global breaker would let one test's failures
+        # change what the next test sees.
+        self._lock = threading.Lock()
+        self._consecutive_failures: dict[str, int] = {}
+        self._parked: set[str] = set()
+        # Backends with a health check in flight. Treated as unavailable while probing - see
+        # probe_now(): "we are still finding out" must never become "let the visitor wait".
+        self._probing: set[str] = set()
+        self._last_probe_at = -1e9  # so the first probe_now() is never debounced away
+        self._prober: threading.Thread | None = None
+        self._stop_probing = threading.Event()
+
+    BREAKER_THRESHOLD = 2  # consecutive failures before a backend is parked
+
+    # How often a parked backend is quietly re-checked in the background. Ten minutes by
+    # default: an exhausted Gemini quota resets on Google's clock (hourly or daily depending on
+    # the limit hit), so probing much more often is just noise, and probing much less often
+    # means running on the weaker model for longer than necessary after it recovers.
+    RECHECK_INTERVAL_S = float(os.environ.get("LLM_RECHECK_INTERVAL_S")
+                               or os.environ.get("LUC_LLM_RECHECK_INTERVAL_S") or 600.0)
+
+    def _recheck_every(self) -> str:
+        """The re-check interval as a phrase, in whichever unit reads naturally. A short test
+        interval printing as "every 0 minute(s)" is the kind of small wrongness that makes a
+        reader distrust the rest of the log."""
+        secs = self.RECHECK_INTERVAL_S
+        if secs < 60:
+            return f"{secs:.0f} second(s)"
+        return f"{secs / 60:.0f} minute(s)"
+
+    # How long probe_now() stays quiet after a probe, so a group of people arriving together -
+    # or one person stepping in and out of frame - fires one check rather than a burst of them.
+    PROBE_DEBOUNCE_S = 30.0
+
+    def probe_now(self, reason: str = "") -> None:
+        """Check every health-checkable backend RIGHT NOW, in the background. Returns
+        immediately; nothing waits on the result.
+
+        WHY THIS IS CALLED WHEN THE ROBOT SEES SOMEBODY
+        -----------------------------------------------
+        The expensive question is "is Gemini answering?", and the only two places to ask it are
+        both bad: on a visitor's question (they wait up to the full timeout for the answer) or
+        on a timer (the first visitor after each interval waits instead). Both put the cost on
+        a person standing in front of the robot.
+
+        But there is a third moment, and it is free. Between the camera noticing somebody and
+        that person finishing their first question, several seconds pass with nothing else
+        happening: they walk up, the robot greets them, face recognition votes, they start
+        talking. Asking during THAT window costs nobody anything, and by the time a question
+        actually arrives the answer is already known.
+
+        So the orchestrator calls this the moment a visitor is detected. If Gemini is healthy it
+        is used for their whole visit. If it is not, it is parked before their first question is
+        even finished, and the entire visit runs on Ollama at full speed - the visitor never
+        experiences the timeout at all, because it happened while they were still walking over.
+
+        A backend being probed counts as unavailable until the probe comes back (see
+        _available). That is deliberate: mid-probe we do not KNOW it works, and the entire point
+        here is to never gamble a visitor's wait on it. The cost is that a question arriving
+        during a probe on a HEALTHY system is answered by Ollama instead of Gemini - slightly
+        weaker, never slower, and only for that one question.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_probe_at < self.PROBE_DEBOUNCE_S:
+                return
+            candidates = [
+                (n, g) for n, g in self.generators
+                if hasattr(g, "health_check") and n not in self._probing
+            ]
+            if not candidates:
+                return
+            self._last_probe_at = now
+            for name, _ in candidates:
+                self._probing.add(name)
+
+        threading.Thread(
+            target=self._probe_once, args=(candidates, reason),
+            name="llm-probe", daemon=True,
+        ).start()
+
+    def _probe_once(self, candidates: list[tuple[str, object]], reason: str) -> None:
+        """One round of health checks, on a throwaway thread. Never raises."""
+        for name, generator in candidates:
+            try:
+                generator.health_check()
+            except Exception as exc:  # noqa: BLE001
+                with self._lock:
+                    self._probing.discard(name)
+                    newly_parked = name not in self._parked
+                    self._parked.add(name)
+                if newly_parked:
+                    # One probe failure is enough to park, unlike BREAKER_THRESHOLD on the
+                    # answer path. A probe exists only to answer this question and it answered
+                    # it; requiring a second opinion would just mean a visitor's question
+                    # supplying it, which is the whole thing being avoided.
+                    where = f" ({reason})" if reason else ""
+                    why = " ".join(str(exc).split())
+                    # never print an API key, should an error message ever echo one back
+                    why = re.sub(r"(AIza|gsk_)[0-9A-Za-z_\-]{8,}", r"\1...", why)[:160]
+                    why = why or type(exc).__name__
+                    print(f"[chain] {name} is not responding{where}: {why}")
+                    print(f"[chain] keeping {name} out of the chain so this visit runs on the "
+                          f"next backend with no waiting. Re-checking every "
+                          f"{self._recheck_every()}.")
+                self._start_prober()
+                continue
+
+            with self._lock:
+                self._probing.discard(name)
+                was_parked = name in self._parked
+                self._parked.discard(name)
+                self._consecutive_failures.pop(name, None)
+            if was_parked:
+                print(f"[chain] {name} is available again - putting it back at the front of "
+                      f"the chain.")
+
+    def _available(self) -> list[tuple[str, object]]:
+        """The generators worth trying right now, in order.
+
+        Excludes both parked backends and ones with a probe in flight - see probe_now() for why
+        "we are still finding out" has to count as unavailable rather than as available.
+
+        Never returns empty: if every backend is parked, the parking is ignored and the full
+        chain is tried anyway. "All the backends are parked" must degrade to "try them all and
+        let the caller's fallback handle it", never to "there is nothing to try" - the latter
+        would turn a recoverable outage into a hard failure for the visitor.
+        """
+        with self._lock:
+            unavailable = self._parked | self._probing
+        live = [(n, g) for n, g in self.generators if n not in unavailable]
+        return live or self.generators
+
+    def _note_failure(self, name: str, exc: Exception) -> None:
+        with self._lock:
+            count = self._consecutive_failures.get(name, 0) + 1
+            self._consecutive_failures[name] = count
+            if count < self.BREAKER_THRESHOLD or name in self._parked:
+                return
+            # Only park something that can tell us when it is well again. Parking a backend
+            # with no health_check() would take it out with nothing to bring it back, which is
+            # a permanent downgrade dressed up as a temporary one.
+            generator = dict(self.generators).get(name)
+            if not hasattr(generator, "health_check"):
+                return
+            self._parked.add(name)
+
+        print(f"[chain] {name} has failed {count} times in a row ({_brief(exc)}) - taking it "
+              f"out of the chain so no question waits on it again. Re-checking quietly in the "
+              f"background every {self._recheck_every()}; it comes back by itself the moment "
+              f"it works.")
+        self._start_prober()
+
+    def _note_success(self, name: str) -> None:
+        """One success clears the record completely.
+
+        Not a decrement: a backend that answers is working, and holding a grudge over failures
+        from before an outage ended would park it again on the next single blip.
+        """
+        with self._lock:
+            had_failures = self._consecutive_failures.pop(name, None)
+            was_parked = name in self._parked
+            self._parked.discard(name)
+        if had_failures or was_parked:
+            print(f"[chain] {name} is answering again.")
+
+    def _start_prober(self) -> None:
+        """Starts the background re-check thread, at most once."""
+        with self._lock:
+            if self._prober is not None and self._prober.is_alive():
+                return
+            self._stop_probing.clear()
+            self._prober = threading.Thread(
+                target=self._probe_loop, name="llm-recheck", daemon=True
+            )
+            thread = self._prober
+        thread.start()
+
+    def _probe_loop(self) -> None:
+        """Re-checks parked backends on a timer until they all come back.
+
+        Daemon thread, and it exits on its own once nothing is parked - so a chain that
+        recovers stops costing anything at all rather than pinging a healthy API forever.
+        """
+        while not self._stop_probing.is_set():
+            # wait() rather than sleep(), so close() takes effect immediately at shutdown
+            # instead of after up to ten minutes.
+            if self._stop_probing.wait(self.RECHECK_INTERVAL_S):
+                return
+
+            with self._lock:
+                parked = list(self._parked)
+            if not parked:
+                return
+
+            for name in parked:
+                if self._stop_probing.is_set():
+                    return
+                generator = dict(self.generators).get(name)
+                check = getattr(generator, "health_check", None)
+                if check is None:
+                    continue
+                try:
+                    check()
+                except Exception as exc:  # noqa: BLE001 - still down; try again next round
+                    print(f"[chain] {name} is still unavailable ({_brief(exc)}) - staying "
+                          f"out of the chain, next check in {self._recheck_every()}.")
+                    continue
+                with self._lock:
+                    self._parked.discard(name)
+                    self._consecutive_failures.pop(name, None)
+                print(f"[chain] {name} is available again - putting it back at the front of "
+                      f"the chain. The next question will use it.")
+
+    def close(self) -> None:
+        """Stops the background re-check. Safe to call more than once, and safe to never call -
+        the thread is a daemon and will not hold the process open either way."""
+        self._stop_probing.set()
 
     @property
     def names(self) -> list[str]:
@@ -722,15 +1180,17 @@ class ChainAnswerGenerator:
 
     def generate_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]) -> str:
         errors = []
-        for name, generator in self.generators:
+        for name, generator in self._available():
             try:
                 answer = generator.generate_grounded_answer(question, chunks)
             except Exception as exc:
                 print(f"[chain] {name} failed on the grounded answer ({exc!r}) - trying the "
                       f"next backend.")
+                self._note_failure(name, exc)
                 errors.append(f"{name}: {exc!r}")
                 continue
             if answer and answer.strip():
+                self._note_success(name)
                 if errors:
                     print(f"[chain] answered by {name} after {len(errors)} failure(s).")
                 return answer
@@ -757,7 +1217,7 @@ class ChainAnswerGenerator:
         chain has nobody who can stream.
         """
         errors = []
-        for name, generator in self.generators:
+        for name, generator in self._available():
             streamer = getattr(generator, "stream_grounded_answer", None)
             if streamer is None:
                 continue
@@ -773,9 +1233,11 @@ class ChainAnswerGenerator:
             except Exception as exc:
                 print(f"[chain] {name} failed to start streaming ({exc!r}) - trying the next "
                       f"backend.")
+                self._note_failure(name, exc)
                 errors.append(f"{name}: {exc!r}")
                 continue
 
+            self._note_success(name)
             if errors:
                 print(f"[chain] streaming from {name} after {len(errors)} failure(s).")
             yield first
@@ -791,8 +1253,42 @@ class ChainAnswerGenerator:
         detail = "; ".join(errors) if errors else "no backend supports streaming"
         raise RuntimeError(f"no streaming answer backend succeeded ({detail})")
 
+    @property
+    def supports_general_streaming(self) -> bool:
+        return any(hasattr(g, "stream_general_answer") for _, g in self.generators)
+
+    def stream_general_answer(self, question: str):
+        """Same failover rule as stream_grounded_answer(): a backend gets its chance to produce
+        a FIRST piece, and only after that is the answer committed to it."""
+        errors = []
+        for name, generator in self._available():
+            streamer = getattr(generator, "stream_general_answer", None)
+            if streamer is None:
+                continue
+            stream = streamer(question)
+            try:
+                first = next(stream)
+            except StopIteration:
+                errors.append(f"{name}: empty stream")
+                continue
+            except Exception as exc:
+                print(f"[chain] {name} failed to start the general answer ({_brief(exc)}) - "
+                      f"trying the next backend.")
+                self._note_failure(name, exc)
+                errors.append(f"{name}: {exc!r}")
+                continue
+            self._note_success(name)
+            yield first
+            try:
+                yield from stream
+            except Exception as exc:
+                print(f"[chain] {name} failed mid-answer ({exc!r}) - ending with what was said.")
+            return
+        detail = "; ".join(errors) if errors else "no backend supports streaming"
+        raise RuntimeError(f"no streaming general backend succeeded ({detail})")
+
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
-        for name, generator in self.generators:
+        for name, generator in self._available():
             try:
                 is_university_related, answer = generator.classify_and_answer_general(question)
             except Exception as exc:
@@ -849,15 +1345,39 @@ class UniversityOnlyAnswerGenerator:
 MODE = "auto"  # "auto" | "full" | "ollama_only" | "university_only"
 
 
+_CLOUD_BACKENDS = {
+    # name in ANSWER_BACKENDS -> (display name, env var holding the key, constructor)
+    "groq": ("Groq", "GROQ_API_KEY", lambda: GroqAnswerGenerator()),
+    "gemini": ("Gemini", "GEMINI_API_KEY", lambda: GeminiAnswerGenerator()),
+    "claude": ("Claude", "ANTHROPIC_API_KEY", lambda: ClaudeAnswerGenerator()),
+}
+
+
+def _build_cloud_generators() -> list[tuple[str, object]]:
+    """Every cloud backend that has a key, in ANSWER_BACKENDS order (changed 2026-10-27).
+
+    Before, only ONE cloud backend was ever used - Gemini if its key existed, otherwise Groq - so
+    a robot with both keys still waited on Gemini's thinking time on every question, and lost
+    Groq as a fallback. Now every backend with a key joins the chain, fastest first.
+    """
+    built = []
+    for key in RT.answer_backend_order():
+        if key not in _CLOUD_BACKENDS:
+            continue
+        display, env_var, make = _CLOUD_BACKENDS[key]
+        if not os.environ.get(env_var):
+            continue
+        try:
+            built.append((display, make()))
+        except Exception as exc:  # e.g. the SDK for that backend is not installed
+            print(f"[answers] {display} has a key but could not start ({exc!r}) - skipping it.")
+    return built
+
+
 def _build_cloud_generator():
-    """Whichever cloud backend has a key, or None. Gemini first per request (2026-08-17) -
-    ClaudeAnswerGenerator is still defined above and works fine if you want to switch back (add
-    an ANTHROPIC_API_KEY check ahead of these)."""
-    if os.environ.get("GEMINI_API_KEY"):
-        return "Gemini", GeminiAnswerGenerator()
-    if os.environ.get("GROQ_API_KEY"):
-        return "Groq", GroqAnswerGenerator()
-    return None
+    """Kept for anything that still calls it: the FIRST cloud backend, or None."""
+    built = _build_cloud_generators()
+    return built[0] if built else None
 
 
 def _build_local_generator(warm: bool = True):
@@ -919,7 +1439,15 @@ def _build_answer_generator():
     if MODE != "auto":
         print(f'Unknown MODE={MODE!r} - treating it as "auto".')
 
-    backends = [b for b in (_build_cloud_generator(), _build_local_generator()) if b is not None]
+    order = RT.answer_backend_order()
+    backends = list(_build_cloud_generators())
+    if "ollama" in order:
+        local = _build_local_generator()
+        if local is not None:
+            # Ollama goes where ANSWER_BACKENDS puts it (normally last).
+            position = sum(1 for k in order[:order.index("ollama")] if k != "ollama"
+                           and any(n.lower() == k for n, _ in backends))
+            backends.insert(position, local)
 
     if not backends:
         print(
@@ -1059,11 +1587,74 @@ def _run_chain_self_test() -> int:
         "fifth floor" in result.answer.lower() or "5th floor" in result.answer.lower(),
     )
 
+    # --- probing on arrival, so no visitor ever waits on a dead backend ----------------------
+    # The behavioural fix for a measured 10s-per-question stall: check the cloud backend while
+    # the visitor is still walking up, not when they ask.
+    class _SlowDeadCloud:
+        """A quota-exhausted cloud backend: fails, and takes the full timeout doing it."""
+
+        inline_calls = 0
+
+        def health_check(self):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+        def generate_grounded_answer(self, question, chunks):
+            _SlowDeadCloud.inline_calls += 1
+            time.sleep(1.0)  # stands in for the real 10s API timeout
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+        def classify_and_answer_general(self, question):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    class _InstantLocal:
+        def generate_grounded_answer(self, question, chunks):
+            return "The Engineering department is on the third floor."
+
+        def classify_and_answer_general(self, question):
+            return False, "sure"
+
+    chain = ChainAnswerGenerator([("DeadCloud", _SlowDeadCloud()), ("Local", _InstantLocal())])
+    chain.probe_now("visitor detected")
+    for _ in range(50):  # the probe is on a thread; give it a moment to land
+        if "DeadCloud" in chain._parked:
+            break
+        time.sleep(0.05)
+    started = time.monotonic()
+    answer = chain.generate_grounded_answer("where is engineering", [])
+    elapsed = time.monotonic() - started
+    all_ok &= _check(
+        f"a visitor's first question skips the dead backend entirely ({elapsed * 1000:.0f}ms, "
+        f"{_SlowDeadCloud.inline_calls} call(s) made on their question)",
+        _SlowDeadCloud.inline_calls == 0 and elapsed < 0.5 and "third floor" in answer,
+    )
+
+    # ...and a healthy backend is completely unaffected by any of it.
+    class _GoodCloud:
+        def health_check(self):
+            return None
+
+        def generate_grounded_answer(self, question, chunks):
+            return "cloud answer"
+
+    healthy = ChainAnswerGenerator([("Cloud", _GoodCloud()), ("Local", _InstantLocal())])
+    healthy.probe_now("visitor detected")
+    for _ in range(50):
+        if not healthy._probing:
+            break
+        time.sleep(0.05)
+    all_ok &= _check(
+        "a healthy cloud backend is still used, and probing never parks it",
+        healthy.generate_grounded_answer("q", []) == "cloud answer" and not healthy._parked,
+    )
+    chain.close()
+    healthy.close()
+
     print()
     if all_ok:
         print("OK: a cloud backend that 503s, 429s, or returns nothing costs one retry against "
-              "the local model instead of a wrong answer - and a fully dead chain hands the "
-              "decision back to DialogueManager rather than making one up.")
+              "the local model instead of a wrong answer; a dead one is found while the visitor "
+              "is still walking up, so their questions never wait on it; and a fully dead chain "
+              "hands the decision back to DialogueManager rather than making one up.")
         return 0
     print("One or more checks failed - see above.")
     return 1

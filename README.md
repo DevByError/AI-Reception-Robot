@@ -63,7 +63,8 @@ The short version, on a fresh clone:
 # Windows
 .\stages\stage00_setup\setup.ps1        # creates .venv and installs the base packages
 .\.venv\Scripts\Activate.ps1            # activate - needed in EVERY new terminal
-pip install -r requirements.txt          # every stage's dependencies
+pip install -r requirements.txt          # every stage's dependencies (requirements-lite.txt: no PyTorch)
+python stages\stage00_setup\download_models.py   # voice, speech recognizer, turn model, wake word
 python stages\stage08_orchestrator\main_live.py
 ```
 
@@ -72,6 +73,7 @@ python stages\stage08_orchestrator\main_live.py
 bash stages/stage00_setup/setup.sh
 source .venv/bin/activate
 pip install -r requirements.txt
+python stages/stage00_setup/download_models.py
 python stages/stage08_orchestrator/main_live.py
 ```
 
@@ -90,6 +92,23 @@ python stages/stage01_presence_detection/presence_detector.py
 ```
 
 The `*_live.py` file beside it is that same stage against real hardware.
+
+## How it holds a conversation (2026-10-27)
+
+- **Who to talk to**: it greets people who stop near it and look at it for a second, not
+  passers-by. It answers the person facing it whose lips are moving, or anyone who says its
+  name, and ignores side conversations and voices from off camera.
+- **When to talk**: a small end-of-turn model hears whether you have finished ("...the
+  library?") or are only pausing ("I wanted to ask about, um..."). It answers about a quarter
+  of a second after a finished question and waits through pauses, sometimes with a quiet "mm-hm".
+- **Being interrupted**: echo cancellation removes its own voice from the microphone, so you can
+  talk over it; it stops and answers what you said instead.
+- **Speed**: answers are spoken sentence by sentence as they are generated. If an answer is slow,
+  it says "mm, okay" after 0.7 s instead of leaving a silence.
+- **Voice and face**: Kokoro, a natural-sounding voice, and an animated face on screen that looks
+  at the visitor and moves its mouth with the speech.
+- **Cheap hardware**: everything runs on a CPU, and `requirements-lite.txt` needs no PyTorch.
+  Measured numbers are in `docs/RESULTS.md`.
 
 ## Short runtime flow
 

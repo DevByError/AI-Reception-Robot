@@ -1,0 +1,16 @@
+# Speech recognition on an NVIDIA GPU (for example the GTX 1650) - optional.
+#
+#     pip install -r requirements-gpu.txt        (after requirements.txt or requirements-lite.txt)
+#
+# Whisper (faster-whisper -> CTranslate2 4.8.4) needs NVIDIA's CUDA 12 cuBLAS and cuDNN 9 libraries.
+# They come as pip packages, so no CUDA Toolkit install is needed - only a normal NVIDIA driver.
+# About 1.3GB. Without them Whisper runs on the CPU and the startup log says why.
+#
+# The cuDNN version is not a free choice: CTranslate2 ships its own cudnn64_9.dll (9.10.2.21), and
+# cuDNN refuses to load parts from a different version. Change both pins only together with
+# ctranslate2 in requirements.txt.
+#
+# When it works, startup prints:  [stt] Whisper is running on the GPU.
+
+nvidia-cublas-cu12==12.8.4.1
+nvidia-cudnn-cu12==9.10.2.21

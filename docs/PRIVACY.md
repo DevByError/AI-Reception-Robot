@@ -74,6 +74,15 @@ details, which is configuration rather than personal data collected from anybody
 every statement that touches it are in `stages/stage02_face_recognition/robot_db.py`; connection
 settings come from a gitignored `.env` at the project root (`.env.example` is the template).
 
+**Without MySQL** (added 2026-10-27): if no MySQL server answers, the robot now keeps the same
+six tables in a local SQLite file, `data/robot_memory.db` (or `LUC_DB_SQLITE_PATH`), instead of
+running with no memory. Everything in this policy applies to that file exactly as to MySQL - the
+same consent rules, the same cascade deletes (SQLite enforces them; `PRAGMA foreign_keys = ON`
+is set on every connection). It holds face embeddings and transcripts, so it must never be
+copied off the robot, committed to git (`data/` is in `.gitignore`), or left on a shared
+computer. Open it with "DB Browser for SQLite" to answer a request; the queries below work
+unchanged.
+
 Rule 5 (local storage) is a **deployment** requirement, and this is the file to check it
 against: point `LUC_DB_HOST` at a machine inside the university, not at a managed cloud
 database, unless the encryption/legal review below has actually happened.
@@ -109,3 +118,28 @@ DELETE FROM people WHERE person_id = '...';
 This file is reference-only — the technical implementation of the consent flag and the
 auto-expiry policy lives in `stages/stage02_face_recognition/face_memory.py`, and the storage
 and cascade-delete behaviour in `stages/stage02_face_recognition/robot_db.py`.
+
+## What leaves the robot (added 2026-10-27)
+
+Faces and the database never leave the computer, and neither do voices unless `STT_CLOUD=groq`
+is set (below): face detection and recognition, speech recognition (Whisper or the streaming
+Zipformer), the end-of-turn model, the wake word, echo cancellation and the voice (Kokoro or
+Piper) all run locally. Microphone audio is not recorded
+to disk; the only audio kept is a few hundred milliseconds in memory while it is being
+recognised.
+
+**The text of a visitor's question does leave it** when a cloud language model answers:
+`ANSWER_BACKENDS` lists the order (default `groq,gemini,ollama`). With a Groq or Gemini key set,
+the question, the matching knowledge-base passages and the last few lines of the current
+conversation are sent to that provider to write the answer. No name, face or person id is sent.
+To keep everything on the robot, set `ANSWER_BACKENDS=ollama` (the local model) and leave
+`STT_CLOUD=off` - slower, but nothing leaves the building. The kiosk notice (rule 6) should say which one is in use.
+
+**A recording of the visitor's question leaves it** when `STT_CLOUD=groq` is set (it is off by
+default): each finished question, a few seconds of 16 kHz audio, is sent to Groq to be transcribed
+by Whisper large-v3, together with a short hint listing the institution's and the robot's names.
+The partial transcripts, the robot's own speech and any audio between questions are not sent.
+Leave `STT_CLOUD=off` to keep all audio on the robot. The kiosk notice should mention it.
+
+`LOG_TRANSCRIPTS=true` prints what visitors say into the console log. Leave it `false` on an
+unattended kiosk whose logs are collected anywhere.

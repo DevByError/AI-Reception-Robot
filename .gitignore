@@ -70,6 +70,23 @@ logs/
 .cache/
 models_cache/
 
+# Models fetched by stages/stage00_setup/download_models.py (Kokoro, Zipformer, smart-turn,
+# MiniLM ONNX, openWakeWord) - ~370MB of binaries, re-downloadable, not source.
+/models/
+
+# The SQLite fallback database (robot_db.py): face embeddings and transcripts. Personal data -
+# never commit it (docs/PRIVACY.md).
+/data/
+
+# Test run leftovers
+.pytest_cache/
+
+# A real person's photo, used only by the tests - never published (tests/data/README.md)
+tests/data/face.jpg
+
+# Copies of your files from before the 2026-10-27 upgrade (safe to delete later)
+/backup_before_upgrade_*/
+
 # Local .env variants (.env.local, .env.production ...). The committed template is .env.example,
 # which is explicitly un-ignored on the last line so the negation below can't swallow it.
 .env.*

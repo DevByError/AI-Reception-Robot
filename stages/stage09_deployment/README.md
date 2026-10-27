@@ -3,9 +3,16 @@
 This is the last stage, and it's more operational than code-heavy. It covers:
 
 ## 1) Running as a persistent service
-- Linux: a `systemd` unit that runs `stages/stage08_orchestrator/main.py` on boot.
-- Watchdog: if the process crashes, restart it automatically (`Restart=always` in systemd is
-  enough as a starting point).
+Both start the robot with its face full screen and no camera debug window, and restart it within
+5 seconds if it crashes (a clean exit, Ctrl+C, is not restarted):
+
+- **Windows**: `start_robot.bat`. Put a shortcut to it in the Startup folder (Win+R,
+  `shell:startup`) so it starts when the robot's computer logs in.
+- **Linux / Jetson**: `luc-robot.service`, a systemd user service. Install steps are at the top
+  of the file; the log is `journalctl --user -u luc-robot -f`.
+
+For a robot with no screen at all, set `HEADLESS=true` (no windows; stop it with Ctrl+C or by
+stopping the service).
 
 ## 2) Graceful degradation
 Every module must fail safely without taking down the whole robot:

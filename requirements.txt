@@ -41,6 +41,9 @@ numpy==1.26.4
 pyyaml==6.0.1
 
 # --- Stage 01: person detection + tracking (ultralytics is AGPL-3.0) ----------------------------
+# Since 2026-10-27 only a FALLBACK (PRESENCE_BACKEND=yolo): the robot finds people with the YuNet
+# face detector instead. torch, ultralytics, lap and sentence-transformers can be left out on a
+# small computer - see requirements-lite.txt.
 torch==2.12.0
 ultralytics==8.4.64
 lap==0.5.13
@@ -57,6 +60,7 @@ pypiwin32==223 ; sys_platform == "win32"
 
 # --- Stage 04: speech-to-text -------------------------------------------------------------------
 faster-whisper==1.0.3
+ctranslate2==4.8.4            # Whisper's engine; pinned because requirements-gpu.txt matches its cuDNN
 webrtcvad-wheels==2.0.14
 noisereduce==3.0.2
 rapidfuzz==3.6.1
@@ -80,3 +84,20 @@ beautifulsoup4==4.12.3
 # --- Stages 08 / 09 ------------------------------------------------------------------------------
 # No dependencies of their own: the orchestrator wires the stages above together, and the
 # deployment stage's logging_config.py is standard library only.
+
+# --- 2026-10-27 upgrade: hearing, voice, attention ------------------------------------------------
+# All run on a CPU with onnxruntime; none needs PyTorch. Models: stages/stage00_setup/download_models.py
+onnxruntime==1.23.2            # Kokoro, smart-turn, MiniLM, openWakeWord
+livekit==1.0.0                 # WebRTC echo cancellation (AEC3) - stage04 audio_io.py
+protobuf==4.25.9               # livekit needs protobuf; mediapipe needs it below 5
+sherpa-onnx==2.0.1             # streaming Zipformer speech recognizer (STT_BACKEND=sherpa)
+sentencepiece==0.2.2           # the Zipformer's hotwords (the robot's name)
+phonemizer-fork==3.3.1         # Kokoro's text -> phonemes ...
+espeakng-loader==0.2.4         # ... with a bundled espeak-ng, nothing to install on Windows
+tokenizers==0.22.2             # MiniLM ONNX embeddings without sentence-transformers
+soundfile==0.14.0
+scipy==1.15.3
+openwakeword==0.6.0            # optional: WAKE_WORD_ENGINE=openwakeword
+
+# --- tests (python -m pytest tests) ---------------------------------------------------------------
+pytest==9.1.1

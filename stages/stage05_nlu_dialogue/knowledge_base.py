@@ -111,7 +111,10 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 # variable rather than a constant edited in the file, because it has to be switchable from the
 # same place the rest of the deployment config lives (the project-root .env, read by
 # robot_db.load_env_file()) without touching source.
-EMBEDDING_BACKEND = os.environ.get("LUC_EMBEDDING_BACKEND", "sentence-transformers")
+#
+# "auto" (default since 2026-10-27): the ONNX export of the SAME all-MiniLM-L6-v2 model when its
+# files are in models/ (no PyTorch needed - see OnnxMiniLMBackend), otherwise sentence-transformers.
+EMBEDDING_BACKEND = os.environ.get("LUC_EMBEDDING_BACKEND", "auto")
 
 # Minimum cosine similarity for a chunk to count as "actually relevant" to a query - see the
 # module docstring above for why this exists and why it needs real measurement, not eyeballing.
@@ -208,6 +211,74 @@ class SentenceTransformerBackend:
 
     def encode_query(self, text: str) -> "np.ndarray":
         return self._model.encode(text, normalize_embeddings=True)
+
+
+class OnnxMiniLMBackend:
+    """all-MiniLM-L6-v2 run through onnxruntime instead of PyTorch (added 2026-10-27).
+
+    Same model, same tokenizer, same mean pooling and normalization as sentence-transformers -
+    measured identical on 300 real chunks from kb_cache.npz (cosine 1.00000, min and mean). That
+    is why it keeps the plain name "all-MiniLM-L6-v2": the existing cache and the measured 0.35
+    similarity threshold stay valid, and switching backends costs no rebuild.
+
+    What it saves: PyTorch is ~2GB of the install and most of the startup time, and it was
+    loaded only to embed one short question per turn. onnxruntime + tokenizers is ~50MB, and a
+    query embeds in ~6ms on a laptop CPU.
+    """
+
+    MAX_TOKENS = 256  # sentence-transformers' max_seq_length for this model
+
+    def __init__(self, model_dir: Path | None = None):
+        try:
+            import onnxruntime as ort
+            from tokenizers import Tokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "onnxruntime and tokenizers are required for the ONNX embedding backend - run: "
+                "pip install onnxruntime tokenizers"
+            ) from exc
+        from model_paths import MINILM_DIR
+
+        model_dir = Path(model_dir) if model_dir else MINILM_DIR
+        model_file = model_dir / "model.onnx"
+        tokenizer_file = model_dir / "tokenizer.json"
+        if not model_file.exists() or not tokenizer_file.exists():
+            raise FileNotFoundError(
+                f"ONNX MiniLM not found in {model_dir} - run "
+                f"python stages/stage00_setup/download_models.py"
+            )
+        self._tokenizer = Tokenizer.from_file(str(tokenizer_file))
+        self._tokenizer.enable_truncation(max_length=self.MAX_TOKENS)
+        self._tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = max(1, min(4, os.cpu_count() or 1))
+        self._session = ort.InferenceSession(
+            str(model_file), sess_options=options, providers=["CPUExecutionProvider"]
+        )
+        self._input_names = {i.name for i in self._session.get_inputs()}
+        self.name = EMBEDDING_MODEL_NAME
+        print(f"Using ONNX embeddings: {self.name} (no PyTorch)")
+
+    def _encode(self, texts: list[str]) -> "np.ndarray":
+        encoded = self._tokenizer.encode_batch(texts)
+        ids = np.array([e.ids for e in encoded], dtype=np.int64)
+        mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+        feeds = {"input_ids": ids, "attention_mask": mask}
+        if "token_type_ids" in self._input_names:
+            feeds["token_type_ids"] = np.zeros_like(ids)
+        hidden = self._session.run(None, feeds)[0]
+        summed = (hidden * mask[..., None]).sum(axis=1)
+        pooled = summed / np.maximum(mask.sum(axis=1, keepdims=True), 1e-9)
+        return _normalize(pooled).astype(np.float32)
+
+    def encode_documents(self, texts: list[str], batch_size: int = 64) -> "np.ndarray":
+        if not texts:
+            return np.zeros((0, 384), dtype=np.float32)
+        parts = [self._encode(texts[i:i + batch_size]) for i in range(0, len(texts), batch_size)]
+        return np.vstack(parts)
+
+    def encode_query(self, text: str) -> "np.ndarray":
+        return self._encode([text])[0]
 
 
 class OllamaEmbeddingBackend:
@@ -311,6 +382,13 @@ def build_embedding_backend(backend: str | None = None):
     follows. A robot that won't start because a local server is down is worse than one running
     on its second-choice embedding model."""
     backend = backend or EMBEDDING_BACKEND
+    if backend in ("auto", "onnx"):
+        try:
+            return OnnxMiniLMBackend()
+        except Exception as exc:
+            if backend == "onnx":
+                print(f"[kb] {exc}\n[kb] falling back to the sentence-transformers backend.")
+            return SentenceTransformerBackend()
     if backend == "ollama":
         try:
             return OllamaEmbeddingBackend()

@@ -17,3 +17,8 @@ piper-tts==1.6.0
 
 # download the voice model (female, US English - see tts_speaker_live.py's VOICE_NAME):
 # python -m piper.download_voices en_US-amy-medium 
+
+# --- 2026-10-27: Kokoro-82M (Apache-2.0), the natural voice - kokoro_voice.py ---------------------
+onnxruntime==1.23.2
+phonemizer-fork==3.3.1
+espeakng-loader==0.2.4

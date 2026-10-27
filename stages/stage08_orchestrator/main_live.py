@@ -110,11 +110,10 @@ from collections import Counter
 from pathlib import Path
 
 import cv2
-import sounddevice as sd
-from ultralytics import YOLO
 
 STAGES_DIR = Path(__file__).resolve().parent.parent
 for stage_folder in [
+    "stage00_setup",
     "stage01_presence_detection",
     "stage02_face_recognition",
     "stage03_proactive_greeting",
@@ -122,11 +121,13 @@ for stage_folder in [
     "stage05_nlu_dialogue",
     "stage06_text_to_speech",
     "stage07_data_pipeline",
+    "stage08_orchestrator",
     "stage09_deployment",
 ]:
     sys.path.append(str(STAGES_DIR / stage_folder))
 
 from presence_detector_live import PerTrackPresenceTracker, detect_people  # noqa: E402
+from face_presence import FacePresenceDetector  # noqa: E402
 from face_memory import RETENTION_DAYS, FaceMemoryStore  # noqa: E402
 from robot_db import connect_or_none  # noqa: E402
 from sface_embedder import SFaceEmbedder  # noqa: E402
@@ -147,7 +148,10 @@ from stt_listener_live import (  # noqa: E402
     BargeInMonitor,
     PatientVAD,
     StreamingVAD,
+    SMART_TURN_ENABLED,
     WhisperSTTEngine,
+    _smart_turn_model,
+    build_stt_engine,
     calibrate_echo_floor,
     listen_for_one_utterance,
     real_hotwords,
@@ -160,10 +164,28 @@ from dialogue_manager import DialogueManager  # noqa: E402
 from dialogue_manager_live import SAMPLE_CHUNKS, _build_answer_generator  # noqa: E402
 import visit_memory  # noqa: E402
 from tts_speaker_live import LiveTTSSpeaker  # noqa: E402
-from filler_bank import FillerBank  # noqa: E402
+from filler_bank import BACKCHANNELS, FillerBank  # noqa: E402
+from audio_player import AudioPlayer  # noqa: E402
+from audio_io import EchoCanceller, MicCapture, device_name, resolve_device  # noqa: E402
+from wake_word import create_detector as create_wake_detector  # noqa: E402
+from identity import get_identity  # noqa: E402
+from model_paths import describe as describe_models  # noqa: E402
 from scraper import REAL_SEED_URLS, UniversityScraper  # noqa: E402
 from indexer import UniversityDataIndexer  # noqa: E402
 from logging_config import LatencyTracker  # noqa: E402
+from realtime_config import RT  # noqa: E402
+from conversation_state import ConversationStateMachine, ConvState  # noqa: E402
+from engagement import EngagementTracker  # noqa: E402
+from addressee import AddresseeJudge, FaceSample, LipHistory, find_wake_word, wake_phrases  # noqa: E402,E501
+from face_display import FaceDisplay, look_x_for  # noqa: E402
+
+
+def rt_log(tag: str, message: str) -> None:
+    """One tagged line of the real-time trace - see stage04's identical helper. The existing
+    per-stage prints ([visit], [dialogue], [stt]...) are untouched; this is the separate,
+    switchable trace of what the CONVERSATION is doing."""
+    if RT.REALTIME_DEBUG:
+        print(f"[{tag}] {message}")
 
 # Same reasoning as stage02/stage03: face embedding is more expensive than plain person
 # tracking, so it only runs a few times per second rather than on every frame.
@@ -320,7 +342,37 @@ CAPTURE_HEIGHT = 720
 # the background answer priming that used to overlap the filler (see _prime_stream) still runs,
 # so this costs perceived snappiness only, never real latency. Set back to True to restore them;
 # filler_bank.py is left intact and still has its own self-test.
-ACKNOWLEDGMENT_FILLERS_ENABLED = False
+#
+# 2026-10-27: now FILLER_MODE in .env, and the default ("auto") keeps the spirit of that
+# instruction - a fast answer is NEVER prefaced. Only when the first words of the answer are
+# still not ready FILLER_DELAY_MS (700ms) after the visitor stopped talking does a short
+# "Mm, okay." fill the gap, because three seconds of dead air reads as a frozen robot.
+# FILLER_MODE=off restores complete silence; "always" is the old behaviour.
+ACKNOWLEDGMENT_FILLERS_ENABLED = RT.FILLER_MODE != "off"
+
+# --- added 2026-10-27 -----------------------------------------------------------------------------
+# The quiet "mm-hm" while a visitor pauses mid-sentence: only after they have been talking for a
+# while (a two-word question needs no encouragement), and never twice in quick succession.
+BACKCHANNEL_MIN_SPEECH_S = 2.5
+BACKCHANNEL_MIN_GAP_S = 6.0
+BACKCHANNEL_VOLUME = 0.6
+
+# How long the robot keeps a visit going for somebody who woke it by voice (openWakeWord) but is
+# not visible to the camera - they called it from the side or from behind. Renewed every time
+# they say something to it.
+VOICE_PRESENCE_S = 15.0
+
+# Barge-in with echo cancellation: the residual echo can be close to nothing, and a threshold of
+# "2.5 x nothing" would fire on room noise. This is the floor under the threshold (-42 dBFS,
+# well under normal speech at a metre).
+MIN_AEC_BARGE_IN_RMS = 0.008
+# With echo cancellation, an echo reading above this is a disturbed measurement, not the room -
+# _calibrate_barge_in() measures once more (converged echo is ~0.002, the noise floor).
+AEC_FLOOR_RECHECK = 0.005
+
+# Lip movement lags the audio by a few camera frames (mouth_activity's rolling window), so the
+# window the addressee check reads is stretched by this much at the end.
+LIP_WINDOW_TAIL_S = 0.4
 
 # How many dialogue turns of this visit to keep for follow-up questions ("how long is it?" after
 # asking about a programme - see dialogue_manager's _contextualize/_history_block). Both sides
@@ -528,6 +580,40 @@ _CHANGE_ACK = (
 )
 
 
+# Said when somebody says only the robot's name ("Nova?"), or wakes it from across the room.
+_WAKE_REPLIES = (
+    "Yes?",
+    "Yes? How can I help?",
+    "I'm here - what can I do for you?",
+)
+
+# Said, once, to somebody who walks up while the robot is busy with another visitor - the
+# glance-and-nod a receptionist gives so the second person knows they have been seen.
+_NEWCOMER_ACK = (
+    "Hi! I'll be with you in just a moment.",
+    "Hello! I'll be right with you.",
+)
+
+
+def _fixed_lines() -> list[str]:
+    """Every line the robot says word for word, for LiveTTSSpeaker.prewarm(). Greetings that
+    contain a visitor's name are left out - those can only be synthesized once the name is
+    known."""
+    from greeting_state_machine import _UNKNOWN_GROUP, _UNKNOWN_SINGLE
+
+    lines: list[str] = []
+    for group in (_UNKNOWN_SINGLE, _UNKNOWN_GROUP, _MORE_QUESTIONS, _GOODBYE_AFTER_HELP,
+                  _NOTHING_ASKED, _OUT_OF_QUESTIONS, _STOP_ACK, _CHANGE_ACK,
+                  _REPAIR_NO_CONTEXT, _WAKE_REPLIES, _NEWCOMER_ACK):
+        lines.extend(group)
+    lines += [
+        "I don't recognize you. Would you like me to remember you for next time?",
+        "No problem, I won't remember this visit.",
+        "Great! What's your name?",
+    ]
+    return lines
+
+
 def _detect_control_intent(text: str | None) -> str | None:
     """Reads an utterance as an interruption/redirection rather than a question.
 
@@ -589,25 +675,51 @@ def _prime_stream(pieces):
     failures and yields the fallback answer, so this thread either gets a piece or gets
     StopIteration.
     """
-    box: dict = {}
+    return _PrimedStream(pieces)
 
-    def _pull() -> None:
+
+class _PrimedStream:
+    """The iterator _prime_stream() returns. `ready` is set the moment the first piece exists
+    (or the stream turned out empty / failed) - that is what lets _answer_one() play an
+    acknowledgment ONLY when the answer is slow (FILLER_MODE=auto) instead of every time."""
+
+    def __init__(self, pieces):
+        self._pieces = pieces
+        self._box: dict = {}
+        self.ready = threading.Event()
+        self._started = time.monotonic()
+        self._iter = None
+        self._thread = threading.Thread(target=self._pull, name="answer-priming", daemon=True)
+        self._thread.start()
+
+    def _pull(self) -> None:
         try:
-            box["first"] = next(pieces)
+            self._box["first"] = next(self._pieces)
+            rt_log("LLM", f"first token received after "
+                          f"{(time.monotonic() - self._started) * 1000:.0f}ms")
         except StopIteration:
-            box["empty"] = True
+            self._box["empty"] = True
+        except Exception as exc:  # noqa: BLE001 - handed to the consumer, not lost here
+            self._box["error"] = exc
+        finally:
+            self.ready.set()
 
-    thread = threading.Thread(target=_pull, name="answer-priming", daemon=True)
-    thread.start()
-
-    def _replay():
-        thread.join()
-        if "empty" in box:
+    def _replay(self):
+        self._thread.join()
+        if "error" in self._box:
+            raise self._box["error"]
+        if "empty" in self._box:
             return
-        yield box["first"]
-        yield from pieces
+        yield self._box["first"]
+        yield from self._pieces
 
-    return _replay()
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._iter is None:
+            self._iter = self._replay()
+        return next(self._iter)
 
 
 def _clean_for_phrase_match(text: str) -> str:
@@ -642,6 +754,31 @@ def _is_clear_negative(text: str | None) -> bool:
     if not text:
         return True
     return any(phrase in _clean_for_phrase_match(text) for phrase in NEGATIVE_PHRASES)
+
+
+_GOODBYE_WORDS = ("bye", "goodbye", "good bye", "thanks", "thank you", "see you", "cheers")
+GOODBYE_MAX_WORDS = 6
+
+
+def _sounds_like_goodbye(text: str | None) -> bool:
+    """True for a short "no thanks, that's all" / "ok thank you, bye" said where a question was
+    expected - most often right after the visitor interrupted an answer they had heard enough
+    of. Stricter than _is_clear_negative(): it has to be short, and once the goodbye words are
+    taken out, nothing question-like may be left ("thanks, and where is the library?" is a
+    question). Silence is NOT a goodbye here (2026-10-27, found by the end-to-end test: the
+    robot answered "No thanks, that's all" as if it were a question)."""
+    if not text:
+        return False
+    cleaned = _clean_for_phrase_match(text)
+    if not cleaned or len(cleaned.split()) > GOODBYE_MAX_WORDS:
+        return False
+    matched = [p for p in NEGATIVE_PHRASES + _GOODBYE_WORDS if p in cleaned]
+    if not matched:
+        return False
+    remainder = f" {cleaned} "
+    for phrase in sorted(matched, key=len, reverse=True):
+        remainder = remainder.replace(phrase, " ")
+    return not any(word in _QUESTION_CUES for word in remainder.split())
 
 
 def _is_bare_affirmation(text: str) -> bool:
@@ -747,8 +884,31 @@ class RobotOrchestrator:
 
     def __init__(self, force_refresh: bool = False,
                  skip_knowledge_base: bool = False):
-        print("Loading YOLOv8n + YuNet + SFace models...")
-        self.yolo = YOLO(str(STAGES_DIR / "stage01_presence_detection" / "yolov8n.pt"))
+        # Which optional models are on disk - one line each, so a missing download is obvious
+        # at startup instead of showing up later as "the voice sounds old" or "it is slow".
+        for label, path, present in describe_models():
+            print(f"  {'OK     ' if present else 'missing'}  {label:<22} "
+                  f"{'' if present else '(run stages/stage00_setup/download_models.py)'}")
+
+        # Presence (2026-10-27): faces by default - YuNet on a 640px copy of the frame, ~10-20ms,
+        # no PyTorch - instead of the YOLOv8 body tracker (~170ms per frame on a laptop CPU, ~2GB
+        # of PyTorch, AGPL-3.0). A reception robot only needs the people whose face it can see,
+        # and the face landmarks are what the "are they facing me?" gate needs anyway.
+        # PRESENCE_BACKEND=yolo brings the old tracker back.
+        self.yolo = None
+        self.face_presence = None
+        if RT.PRESENCE_BACKEND == "face":
+            try:
+                self.face_presence = FacePresenceDetector()
+                print("Presence: faces (YuNet) - no PyTorch needed.")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[presence] face presence unavailable ({exc!r}) - trying YOLO.")
+        if self.face_presence is None:
+            from ultralytics import YOLO  # optional: pulls in PyTorch
+
+            print("Loading YOLOv8n person tracker...")
+            self.yolo = YOLO(str(STAGES_DIR / "stage01_presence_detection" / "yolov8n.pt"))
+        print("Loading YuNet + SFace face recognition...")
         self.embedder = SFaceEmbedder()
 
         # Persistent memory (Stage 02's robot_db.py). connect_or_none() means a MySQL problem
@@ -826,14 +986,65 @@ class RobotOrchestrator:
         # resolvable. Reset per visit in _begin_conversation.
         self._visit_history: list[tuple[str, str]] = []
         # RMS above which a sound during playback counts as somebody talking over the robot.
-        # None = barge-in off (the default, and also what a failed calibration falls back to).
+        # None = barge-in off (also what a failed or unusable calibration falls back to).
         self._barge_in_threshold: float | None = None
+        # Words the visitor interrupted the robot with, carried into the next listen so they
+        # don't have to say them twice - see BargeInMonitor.captured_frames in stage04. Written
+        # by _speak_interruptible on the visit thread and consumed by the next _listen() on the
+        # same thread, so no lock.
+        self._carried_audio: list[bytes] = []
+        # Set by _answer_one for the duration of one answer, so the latency report can time the
+        # gap the visitor actually experiences (question ends -> first word out) rather than how
+        # long the answer took to say. None whenever no answer is in flight.
+        self._first_audio_hook = None
+        # The conversation's own state machine (stage08's conversation_state.py). Observational:
+        # it records what the audio/dialogue/playback layers report and never gates them, so a
+        # fault here can produce a wrong log line and cannot produce a wrong answer. It is what
+        # makes "why did it answer me there?" answerable from a log.
+        self.conv = ConversationStateMachine()
         # Set while building the knowledge base below; initialised here so the background
         # refresher can read it even in modes that skip the knowledge base entirely.
         self._kb_stale = False
         # Wall-clock of the last frame anybody was visible on. Written by the camera thread,
         # read by the conversation thread - see _visitor_present().
         self._last_seen_at = time.monotonic()
+
+        # --- who is talking to the robot (2026-10-27) ---------------------------------------
+        # Engagement: only greet people who are near, facing the robot and staying (stage08's
+        # engagement.py). Lip history: per-frame "whose lips are moving, who is facing me",
+        # timestamped, so the conversation thread can ask about the exact seconds a sentence was
+        # heard (addressee.py). Both are written by the camera thread only.
+        self.engagement = EngagementTracker(
+            RT.ENGAGE_MIN_FACE_FRACTION, RT.ENGAGE_MAX_YAW, RT.ENGAGE_DWELL_S)
+        self.lip_history = LipHistory()
+        robot_name = get_identity().robot_name
+        self.addressee = AddresseeJudge(
+            mode=RT.ADDRESSEE_CHECK, min_lip_fraction=RT.ADDRESSEE_MIN_LIP_FRACTION,
+            wake=wake_phrases(robot_name, RT.WAKE_WORDS)
+            if RT.WAKE_WORD_ENGINE != "off" else [],
+        )
+        # When the current utterance started and when its last pause began (monotonic), from
+        # stage04's turn events - see _on_turn_event. The speech window for the addressee check.
+        self._speech_started_at: float | None = None
+        self._speech_paused_at: float | None = None
+        self._turn_finished_at: float | None = None
+        self._visitor_stopped_at: float | None = None
+        self._last_backchannel_at = 0.0
+        self._prefetching = threading.Event()
+        # A visit is running (or about to): the idle audio consumer stops reading the
+        # microphone so the visit thread gets every frame. See _idle_audio_loop.
+        self._visit_active = threading.Event()
+        # Set by the idle wake-word listener; the camera loop starts a visit from it.
+        self._wake_requested_at: float | None = None
+        self._woken_visit = False
+        self._voice_presence_until = 0.0
+        # Skip the stale-audio drain on the next listen, once: after a wake word, the question
+        # often follows in the same breath ("hey Nova, where is the library?").
+        self._keep_backlog = False
+        # People who arrived during somebody else's visit, waiting for a "be right with you".
+        self._newcomers_waiting: set[int] = set()
+        self._newcomers_acknowledged: set[int] = set()
+        self._look_x = 0.0
 
         print("Loading mediapipe face mesh (active speaker detection)...")
         try:
@@ -847,8 +1058,21 @@ class RobotOrchestrator:
                   f"stages/stage02_face_recognition/requirements.txt")
             self.mouth_detector = None
 
-        print("Loading Piper voice...")
-        self.tts = LiveTTSSpeaker()
+        # --- audio out and in (2026-10-27) -------------------------------------------------
+        # Software echo cancellation sits between the two: every block the speaker plays is
+        # handed to the canceller as the reference (AudioPlayer's far tap), and every block the
+        # microphone hears is cleaned against it before anything else sees it (MicCapture). That
+        # is what lets the robot listen WHILE it talks - barge-in, "mm-hm" - without hearing
+        # itself. Off or missing (pip install livekit==1.0.0) means exactly the old behaviour.
+        self.echo = EchoCanceller.create(RT.AEC_ENABLED)
+        speaker_device = resolve_device(RT.SPEAKER_DEVICE, "output") if RT.SPEAKER_DEVICE else None
+        print(f"Speaker: {device_name(speaker_device, 'output')}")
+        self.player = AudioPlayer(
+            device=speaker_device,
+            far_tap_factory=self.echo.far_tap if self.echo is not None else None,
+        )
+        print("Loading the voice...")
+        self.tts = LiveTTSSpeaker(player=self.player)
 
         # Pre-rendered "let me see..." acknowledgments, synthesized ONCE here rather than on
         # demand - the whole point is that playing one costs nothing at the moment it is needed
@@ -858,10 +1082,19 @@ class RobotOrchestrator:
         self.fillers = None
         if ACKNOWLEDGMENT_FILLERS_ENABLED:
             try:
-                self.fillers = FillerBank(self.tts.voice)
+                self.fillers = FillerBank(self.tts)
             except Exception as exc:
                 print(f"[filler] could not pre-render acknowledgments ({exc!r}) - continuing "
                       f"without them; answers will just start after a short silence.")
+        # "Mm-hm." while somebody pauses mid-sentence. Only with echo cancellation (by default):
+        # without it the microphone records the robot's own "mm-hm" into the visitor's question.
+        self.backchannels = None
+        if RT.backchannels_wanted(self.echo is not None):
+            try:
+                self.backchannels = FillerBank(self.tts, phrases=BACKCHANNELS, verbose=False,
+                                               volume=BACKCHANNEL_VOLUME)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[filler] could not pre-render back-channels ({exc!r}) - skipping them.")
 
         self.expression = ExpressionController()
         self.greeting_sm = GreetingStateMachine(
@@ -869,38 +1102,28 @@ class RobotOrchestrator:
             _LiveTTSAdapter(self.tts, on_spoken=lambda text: self._record("robot", text)),
         )
 
-        print("Loading faster-whisper...")
-        self.stt_engine = WhisperSTTEngine(
+        print("Loading speech recognition...")
+        # Whisper by default (GPU when faster-whisper can really use one, else CPU int8); the
+        # streaming Zipformer with STT_BACKEND=sherpa - see build_stt_engine in stage04.
+        self.stt_engine = build_stt_engine(
             initial_prompt=real_initial_prompt(), vocabulary=real_vocabulary(),
             hotwords=real_hotwords(),
         )
         self.stt_listener = STTListener(self.stt_engine, PatientVAD(), locale="en-US")
         self.vad = StreamingVAD()
+        if SMART_TURN_ENABLED:
+            _smart_turn_model()   # load now, not on the first visitor's first pause
         self.audio_q: "queue.Queue[bytes]" = queue.Queue()
 
-        def _on_audio(indata, frames, time_info, status):
-            if status:
-                # "input overflow" here is not cosmetic and is worth naming: PortAudio ran out
-                # of room and THREW AWAY microphone audio, so whatever reaches Whisper next has
-                # holes in it. A recording full of holes is what transcribes to nothing at all,
-                # which the visitor experiences as the robot ignoring them.
-                detail = ""
-                if status.input_overflow:
-                    detail = (" - microphone audio was DROPPED; expect a poor or empty "
-                              "transcript")
-                print(f"[audio] {status}{detail}", file=sys.stderr)
-            # One callback carries MIC_BLOCK_FRAMES worth of audio; everything downstream (the
-            # webrtcvad wrapper, the preroll, the barge-in monitor) is built on single 30ms
-            # frames, so split it back up here rather than changing all of them. blocksize is an
-            # exact multiple of FRAME_SAMPLES, so this never leaves a partial frame behind.
-            raw = bytes(indata)
-            step = FRAME_SAMPLES * 2  # int16 = 2 bytes per sample
-            for start in range(0, len(raw) - step + 1, step):
-                self.audio_q.put(raw[start:start + step])
-
-        self.mic_stream = sd.RawInputStream(
-            samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES * MIC_BLOCK_FRAMES, dtype="int16",
-            channels=1, callback=_on_audio,
+        # The microphone: 30ms frames onto audio_q, echo-cancelled when self.echo exists.
+        # MIC_BLOCK_FRAMES is still the PortAudio buffer depth (see its note above). With
+        # AUDIO_CAPTURE_PROCESS=true the device is read by a separate process, so heavy vision
+        # or model work on this one can never make PortAudio drop microphone audio.
+        mic_device = resolve_device(RT.MIC_DEVICE, "input") if RT.MIC_DEVICE else None
+        self.mic_stream = MicCapture(
+            self.audio_q, sample_rate=SAMPLE_RATE, frame_samples=FRAME_SAMPLES,
+            block_frames=MIC_BLOCK_FRAMES, device=mic_device, canceller=self.echo,
+            use_process=RT.AUDIO_CAPTURE_PROCESS,
         )
 
         # Say which microphone this is actually using. No device is named above, so it is
@@ -911,6 +1134,8 @@ class RobotOrchestrator:
         # thinks of, because nothing ever printed it. Purely informational - any failure here
         # must not stop the robot starting.
         try:
+            import sounddevice as sd
+
             device = sd.query_devices(self.mic_stream.device, "input")
             print(f"Microphone: {device['name']} "
                   f"(native {int(device['default_samplerate'])}Hz, capturing at {SAMPLE_RATE}Hz)")
@@ -1018,7 +1243,8 @@ class RobotOrchestrator:
             # name - genuinely unusual proper nouns rather than ordinary English. Do not re-add the
             # knowledge-base terms here without re-running that measurement.
 
-            self.dialogue = DialogueManager(self.kb, _build_answer_generator())
+            self.dialogue = DialogueManager(self.kb, _build_answer_generator(),
+                                            stream_general=RT.STREAM_GENERAL_ANSWERS)
 
         self.cap = cv2.VideoCapture(0)
         # Ask for a bigger frame than the camera's own default. This is not cosmetic - it is
@@ -1048,6 +1274,29 @@ class RobotOrchestrator:
         if not self.cap.isOpened():
             raise RuntimeError("Could not open camera index=0")
 
+        # Optional always-on wake word (WAKE_WORD_ENGINE=openwakeword) - lets somebody call the
+        # robot from off camera. The robot's name in a sentence works without it.
+        self.wake_detector = create_wake_detector(
+            RT.WAKE_WORD_ENGINE, RT.OWW_MODEL, RT.OWW_THRESHOLD)
+
+        # The face on the screen (the Expression Layer). Drawn by the camera loop.
+        self.face_display = None
+        if RT.FACE_DISPLAY and not RT.HEADLESS:
+            self.face_display = FaceDisplay(fullscreen=RT.FACE_FULLSCREEN)
+
+        # Synthesize the fixed lines now, in the background, so the first time each is said it
+        # starts instantly too (TTS_AUDIO_CACHE). Greetings with a name in them cannot be done
+        # ahead, the rest can.
+        # Paused while anybody is being served, so it never competes with a live conversation.
+        # Also paused during the barge-in calibration: synthesis on every core starves the audio
+        # threads, and a measurement taken then is of a stalled speaker, not of the room.
+        self._calibrating = threading.Event()
+        if RT.TTS_AUDIO_CACHE:
+            self.tts.prewarm(
+                _fixed_lines(),
+                pause_while=lambda: self._visit_active.is_set() or self._calibrating.is_set(),
+                stop=self._shutting_down)
+
     # --- persistent memory ----------------------------------------------------------------
 
     def _purge_expired_people(self) -> None:
@@ -1071,6 +1320,11 @@ class RobotOrchestrator:
         self._conversation_person_id = person_id
         self._turn_index = 0
         self._visit_history = []
+        # A fresh conversation starts from IDLE whatever the last one ended in - somebody can
+        # walk away mid-answer, leaving the machine in AI_SPEAKING, and the next visitor must
+        # not inherit that.
+        self.conv.reset("new visit")
+        self._carried_audio = []
         if self.db is None:
             return
         try:
@@ -1117,13 +1371,18 @@ class RobotOrchestrator:
             print(f"[db] could not close the conversation record ({exc!r}).")
         finally:
             self._conversation_id = None
+            rt_log("TURN", f"visit finished - states this visit went through: "
+                           f"{self.conv.recent(10)}")
+            self.conv.reset("visit ended")
 
     def _listen(self, timeout_s: float) -> str | None:
         # Same reason as _speak(): the microphone is closing, so there is nothing to listen to
         # and blocking here for the timeout would just delay the shutdown by that long.
         if self._shutting_down.is_set():
             return None
-        time.sleep(SETTLE_DELAY_S)
+        interrupting = bool(getattr(self, "_carried_audio", None))
+        if not interrupting:
+            time.sleep(SETTLE_DELAY_S)
 
         # Drain any stale backlog before listening. The mic callback queues real-time audio
         # continuously, including while this thread is blocked doing something else entirely -
@@ -1136,24 +1395,228 @@ class RobotOrchestrator:
         # FRAME_MS-at-a-time) and elapsed_ms (real wall-clock) fall out of lockstep - which is
         # what produced the repeated, rapid-fire "speech detected... too short - ignoring" bursts
         # and garbled transcripts seen in real testing (2026-08-19), not a VAD-tuning problem.
+        #
+        # (2026-10-27: with echo cancellation the backlog is no longer the robot's own voice,
+        # but it is still old - and right after a wake word it is the opposite: the start of
+        # the visitor's question, which is why _keep_backlog skips the drain once.)
+        #
+        # And not after an interruption either (2026-10-27): the visitor is still MID-SENTENCE
+        # then, and everything queued since the barge-in fired is the rest of that sentence.
+        # Draining it kept only the first half-second ("Wait, the li-") and threw the question
+        # away - found by the end-to-end simulation.
         drained = 0
-        while True:
-            try:
-                self.audio_q.get_nowait()
-                drained += 1
-            except queue.Empty:
-                break
+        if getattr(self, "_keep_backlog", False) or interrupting:
+            self._keep_backlog = False
+        else:
+            while True:
+                try:
+                    self.audio_q.get_nowait()
+                    drained += 1
+                except queue.Empty:
+                    break
         if drained:
             print(f"[stt] (discarded {drained} stale audio frame(s) queued while busy)")
 
-        heard = listen_for_one_utterance(
-            self.stt_engine, self.stt_listener, self.vad, self.audio_q, timeout_s=timeout_s
-        )
+        # ...but NOT the words somebody interrupted the robot with. Those are the one part of
+        # the backlog that is real, wanted, live speech, so they are taken before the drain
+        # above ever sees them (BargeInMonitor consumed them off the queue itself) and handed
+        # to the listener as the start of this utterance.
+        carried, self._carried_audio = self._carried_audio, []
+        if not carried:
+            self.conv.to(ConvState.LISTENING, f"waiting up to {timeout_s:.0f}s")
+
+        # Listen until something is said TO the robot (2026-10-27). A sentence the addressee
+        # check rejects - two visitors talking to each other, somebody on the phone behind them
+        # - is not answered and not recorded; the robot simply keeps listening, for whatever is
+        # left of the timeout. See stage08's addressee.py.
+        deadline = time.monotonic() + timeout_s
+        while True:
+            self._speech_started_at = self._speech_paused_at = None
+            interrupted_at = getattr(self, "_interrupted_at", None) if carried else None
+            remaining = max(0.5, deadline - time.monotonic())
+            heard = listen_for_one_utterance(
+                self.stt_engine, self.stt_listener, self.vad, self.audio_q, timeout_s=remaining,
+                prefix_frames=carried or None, on_turn_event=self._on_turn_event,
+            )
+            carried = []
+            if interrupted_at is not None:
+                # The speech window of an interruption starts at the barge-in (minus the audio
+                # carried over), not when this listen got round to starting.
+                self._speech_started_at = interrupted_at
+                self._interrupted_at = None
+            if heard is None and self.conv.is_in(ConvState.LISTENING):
+                rt_log("TURN", f"nobody spoke within {timeout_s:.0f}s")
+            if not heard:
+                break
+            decision = self._judge_addressee(heard)
+            if decision is None:
+                break
+            if not decision.addressed:
+                print(f"[addressee] not answering - {decision.reason}")
+                rt_log("TURN", f"ignored an utterance: {decision.reason}")
+                self.conv.to(ConvState.LISTENING, "that was not said to the robot")
+                if time.monotonic() >= deadline:
+                    heard = None
+                    break
+                continue
+            rt_log("TURN", f"addressed to the robot: {decision.reason}")
+            if getattr(self, "_woken_visit", False):
+                self._voice_presence_until = time.monotonic() + VOICE_PRESENCE_S
+            if decision.question.strip(" ,.!?"):
+                heard = decision.question
+                break
+            # Only the robot's name: "Nova?" - answer like a person would, and listen again.
+            self._record("visitor", heard)
+            self._speak(_pick(_WAKE_REPLIES))
+            deadline = time.monotonic() + timeout_s
         # The transcript stores what Whisper HEARD, including its [??] low-confidence markers -
         # not a cleaned-up version. When a stored answer later looks wrong, the recorded
         # question is the only way to tell a bad answer apart from a misheard question.
         self._record("visitor", heard or "")
         return heard
+
+    def _judge_addressee(self, heard: str):
+        """Was `heard` said to the robot? None when there is no judge (old behaviour).
+
+        Reads the lip history over the seconds the sentence was being spoken (from the turn
+        events), stretched a little at the end because lip movement is measured over a rolling
+        window and so lags the audio."""
+        judge = getattr(self, "addressee", None)
+        if judge is None:
+            return None
+        history = getattr(self, "lip_history", None)
+        frames, faces = 0, []
+        start = getattr(self, "_speech_started_at", None)
+        if history is not None and start is not None:
+            end = (getattr(self, "_speech_paused_at", None) or time.monotonic())
+            frames, faces = history.summarize(start, end + LIP_WINDOW_TAIL_S)
+        try:
+            return judge.decide(heard, frames, faces)
+        except Exception as exc:  # noqa: BLE001 - never go deaf over a diagnostic
+            print(f"[addressee] check failed ({exc!r}) - answering anyway.")
+            return None
+
+    def _probe_answer_backends(self, reason: str) -> None:
+        """Asks the answer chain to re-check its backends in the background, if it is a chain
+        that can (see ChainAnswerGenerator.probe_now).
+
+        Wrapped rather than called directly because the generator is not always a chain: with
+        no Ollama and no API key the robot runs on UniversityOnlyAnswerGenerator, and with only
+        one backend configured it runs on that backend alone. Neither has probe_now(), and
+        neither should have to grow one just so the camera loop can call it unconditionally.
+
+        Never raises. This runs on the camera thread, once per arrival, and a diagnostic that
+        could interrupt person detection would be a bad trade for what it buys.
+        """
+        probe = getattr(getattr(self, "dialogue", None), "answer_generator", None)
+        probe = getattr(probe, "probe_now", None)
+        if probe is None:
+            return
+        try:
+            probe(reason)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[chain] backend probe could not start ({exc!r}) - carrying on; the answer "
+                  f"chain still falls back normally, it just finds out the slower way.")
+
+    def _on_turn_event(self, event: str, detail: str = "") -> None:
+        """Bridges stage04's audio-level turn events onto the conversation state machine.
+
+        This is the only place the two vocabularies meet, deliberately. stage04 reports what the
+        MICROPHONE observed ("paused", "resumed") and knows nothing about conversations; the
+        state machine models the conversation and knows nothing about frames or pitch contours.
+        Keeping the translation in one small function is what lets either side be retuned
+        without the other having to care.
+
+        The mapping that matters is "paused" -> USER_PAUSED rather than USER_FINISHED. A pause
+        is not an end of turn, and the whole adaptive endpointer exists to tell the two apart -
+        so only "finished", which stage04 emits once the endpointer has actually committed, is
+        allowed to move the conversation on.
+        """
+        now = time.monotonic()
+        # Anything except the endpointer deciding "mid-sentence, keep waiting" makes a pending
+        # "mm-hm" stale - see _maybe_backchannel.
+        if event != "holding" and not (event == "resumed" and "mid-thought" in (detail or "")):
+            self._backchannel_token = getattr(self, "_backchannel_token", 0) + 1
+        if event == "speech_started":
+            # The VAD confirms speech SPEECH_START_FRAMES (~120ms) after it began, and the
+            # preroll reaches further back; 0.3s puts the window start where the words did.
+            carried = re.search(r"carried over (\d+)ms", detail or "")
+            self._speech_started_at = now - (int(carried.group(1)) / 1000.0 if carried else 0.3)
+            self._speech_paused_at = None
+            self.conv.to(ConvState.USER_SPEAKING, detail or "VAD confirmed speech")
+        elif event == "paused":
+            self._speech_paused_at = now - 0.06   # reported after two silent 30ms frames
+            self.conv.to(ConvState.USER_PAUSED, "mid-turn silence - still listening")
+        elif event == "holding":
+            self._maybe_backchannel()
+        elif event == "resumed":
+            self._speech_paused_at = None
+            self.conv.to(ConvState.USER_SPEAKING, detail or "they carried on")
+        elif event == "partial":
+            self._prefetch(detail)
+        elif event == "finished":
+            self._turn_finished_at = now
+            # When their voice actually stopped: the start of the final pause, which is the
+            # endpointer's silence wait earlier than "finished". Latency is measured from here.
+            self._visitor_stopped_at = self._speech_paused_at or now
+            self.conv.to(ConvState.USER_FINISHED, "endpointer committed")
+        elif event == "discarded":
+            # Speech was detected and then rejected as too short. No turn happened, so go back
+            # to waiting rather than pretending one ended.
+            self.conv.to(ConvState.LISTENING, f"discarded {detail} - not real speech")
+
+    def _prefetch(self, partial: str) -> None:
+        """Starts the knowledge-base search for a partial transcript while the visitor is still
+        talking (DialogueManager.prefetch), so it is already done when they stop. One at a time,
+        on its own thread - it must never slow down the listening loop that calls this."""
+        dialogue = getattr(self, "dialogue", None)
+        if dialogue is None or not partial or not hasattr(dialogue, "prefetch"):
+            return
+        if self._prefetching.is_set():
+            return
+        question = partial
+        judge = getattr(self, "addressee", None)
+        if judge is not None and judge.wake:
+            question = find_wake_word(partial, judge.wake)[1] or partial
+        history = list(self._visit_history)
+        self._prefetching.set()
+
+        def _run() -> None:
+            try:
+                dialogue.prefetch(question, history=history)
+            finally:
+                self._prefetching.clear()
+
+        threading.Thread(target=_run, name="kb-prefetch", daemon=True).start()
+
+    def _maybe_backchannel(self) -> None:
+        """A quiet "mm-hm" for a visitor who has paused MID-SENTENCE - only ever called when
+        the endpointer has decided the pause is not the end of the turn ("holding"), never on a
+        plain pause, which is just as often the end of a question. Also only after they have
+        been talking a while, not twice within a few seconds, and only if the pause is still
+        going BACKCHANNEL_AFTER_MS after it began (checked on a timer)."""
+        bank = getattr(self, "backchannels", None)
+        started, paused = self._speech_started_at, self._speech_paused_at
+        if bank is None or started is None or paused is None:
+            return
+        if paused - started < BACKCHANNEL_MIN_SPEECH_S:
+            return
+        if time.monotonic() - self._last_backchannel_at < BACKCHANNEL_MIN_GAP_S:
+            return
+        token = getattr(self, "_backchannel_token", 0)
+
+        def _fire() -> None:
+            if (getattr(self, "_backchannel_token", 0) != token
+                    or self._shutting_down.is_set()):
+                return   # they carried on, or the turn ended - no "mm-hm" now
+            self._last_backchannel_at = time.monotonic()
+            rt_log("TTS", "back-channel while the visitor pauses mid-sentence")
+            bank.play_async()
+
+        delay = max(0.05, RT.BACKCHANNEL_AFTER_MS / 1000.0 - (time.monotonic() - paused))
+        timer = threading.Timer(delay, _fire)
+        timer.daemon = True
+        timer.start()
 
     def _busy_with_a_visitor(self) -> bool:
         """Whether the robot is currently dealing with somebody.
@@ -1287,29 +1750,83 @@ class RobotOrchestrator:
         # The measurement is worthless unless the microphone is actually feeding audio_q.
         # run() already holds the stream open, so it passes manage_stream=False; the standalone
         # --calibrate-barge-in path has to open it itself.
+        calibrating = getattr(self, "_calibrating", None)
+        if calibrating is not None:
+            calibrating.set()
         try:
+            # With echo cancellation, the first second is the canceller converging - skip it.
+            aec = getattr(self, "echo", None) is not None
+            skip = 1.5 if aec else 0.0
+
+            def _measure(text=None) -> float:
+                return calibrate_echo_floor(self.audio_q, lambda t: self.tts.speak(t),
+                                            sample_text=text, skip_first_s=skip)
+
+            def _measure_twice_if_odd() -> float:
+                floor = _measure()
+                # With the canceller converged the echo is near the noise floor. A reading far
+                # above that means something disturbed the measurement (a stall at startup),
+                # and a threshold set from it would make barge-in need a raised voice for the
+                # whole session (2026-10-27, seen in one of the repeated end-to-end runs).
+                # One more sentence, now with a converged canceller; the lower reading wins.
+                if aec and floor > AEC_FLOOR_RECHECK:
+                    again = _measure("And once more, so I can hear how this room sounds.")
+                    print(f"[barge-in] first echo reading {floor:.4f} looked high - measured "
+                          f"again: {again:.4f}.")
+                    floor = min(floor, again)
+                return floor
+
             if manage_stream:
                 with self.mic_stream:
-                    floor = calibrate_echo_floor(self.audio_q, lambda t: self.tts.speak(t))
+                    floor = _measure_twice_if_odd()
             else:
-                floor = calibrate_echo_floor(self.audio_q, lambda t: self.tts.speak(t))
+                floor = _measure_twice_if_odd()
         except Exception as exc:
             print(f"[barge-in] calibration failed ({exc!r}) - barge-in stays off.")
             return None
+        finally:
+            if calibrating is not None:
+                calibrating.clear()
 
+        if floor < 0.0:
+            print("[barge-in] the microphone sent no audio while the robot spoke - is it live? "
+                  "barge-in stays off.")
+            return None
+        aec = getattr(self, "echo", None) is not None
         threshold = floor * BARGE_IN_MARGIN
+        if aec:
+            # The canceller removes nearly all of the echo, so the measured floor can be tiny -
+            # even exactly zero: with a loud speaker right next to the microphone its suppressor
+            # silences the microphone completely while the robot talks (2026-10-27, a laptop's
+            # own speakers: 0.0000). That is the canceller working, not a dead microphone, and
+            # it used to switch barge-in off. A threshold of a few times "nearly nothing" would
+            # fire on room noise, hence the floor.
+            threshold = max(threshold, MIN_AEC_BARGE_IN_RMS)
         print(f"[barge-in] this room returns the robot's own voice at RMS {floor:.4f}; "
               f"interrupting needs {threshold:.4f} ({BARGE_IN_MARGIN}x that).")
-        if floor <= 0.0:
-            print("[barge-in] nothing measured - is the microphone live? barge-in stays off.")
+        if floor <= 0.0 and not aec:
+            print("[barge-in] the microphone heard pure silence - is it muted? barge-in stays "
+                  "off.")
             return None
-        if floor > 0.08:
+        if floor > RT.BARGE_IN_MAX_ECHO_FLOOR:
             # The speaker is loud into this microphone. A person would have to shout to clear
             # the margin, and the robot would interrupt itself on its own voice long before
             # that. Say so plainly rather than shipping a feature that misfires.
-            print("[barge-in] the microphone hears the robot loudly, so there is no room for a "
-                  "reliable threshold. Barge-in stays off - this needs a directional mic or a "
-                  "speakerphone with hardware echo cancellation.")
+            print(f"[barge-in] the microphone hears the robot loudly (RMS {floor:.4f} is above "
+                  f"the {RT.BARGE_IN_MAX_ECHO_FLOOR:.4f} ceiling), so there is no room for a "
+                  f"reliable threshold. This needs a directional mic or a speakerphone with "
+                  f"hardware echo cancellation.")
+            if RT.barge_in_forced():
+                # INTERRUPTION_ENABLED=true is an explicit instruction to run it anyway, so it
+                # runs - but the measurement said this will misfire, and that has to be on the
+                # record rather than discovered later as "the robot keeps cutting itself off".
+                print("[barge-in] INTERRUPTION_ENABLED=true - switching it on regardless, as "
+                      "asked. Expect the robot to interrupt ITSELF on its own voice; set "
+                      "INTERRUPTION_ENABLED=auto to let the measurement decide, or raise "
+                      "BARGE_IN_MARGIN.")
+                return threshold
+            print("[barge-in] barge-in stays off (INTERRUPTION_ENABLED=auto). Set it to true "
+                  "to force it on anyway.")
             return None
         return threshold
 
@@ -1331,6 +1848,15 @@ class RobotOrchestrator:
             speak_fn()
         finally:
             interrupted = monitor.stop()
+
+        if interrupted:
+            self.conv.to(ConvState.INTERRUPTED, "visitor talked over the answer")
+            # The words they interrupted WITH. Held for the next _listen(), which starts the
+            # utterance from them instead of from scratch - so "Wait, I mean the AI department"
+            # is answered, not thrown away and asked for again.
+            self._carried_audio = monitor.take_captured_audio()
+            triggered_at = getattr(monitor, "triggered_at", None) or time.monotonic()
+            self._interrupted_at = triggered_at - len(self._carried_audio) * 0.03
         return interrupted
 
     def _vote_identity(self, track_id: int, match) -> object | None:
@@ -1369,6 +1895,10 @@ class RobotOrchestrator:
         ABSENCE_GRACE_S): a single frame with nobody in it is normal, several seconds of them is
         somebody who left.
         """
+        # Somebody who called the robot by voice from off camera is "present" while they keep
+        # talking to it - see VOICE_PRESENCE_S.
+        if time.monotonic() < getattr(self, "_voice_presence_until", 0.0):
+            return True
         with self._state_lock:
             if self._seen_ids:
                 return True
@@ -1417,7 +1947,9 @@ class RobotOrchestrator:
             return
         print(f'[TTS] "{text}"')
         self._record("robot", text, intent)
-        self.tts.speak(text)
+        self.tts.speak(
+            text, on_first_audio=lambda: self.conv.to(ConvState.AI_SPEAKING, "fixed line"),
+        )
 
     def _speak_stream(self, result, intent: str | None = None) -> str:
         """Speaks a StreamingDialogueResult, starting playback as soon as the first sentence
@@ -1428,16 +1960,36 @@ class RobotOrchestrator:
         The line is recorded AFTER speaking for the same reason - there is nothing to record
         until the stream has been consumed.
         """
-        spoken = self.tts.speak_stream(result.pieces)
+        # AI_SPEAKING is set from inside the player, at the moment real audio reaches the
+        # device - not here, before the call. The difference is the whole answer's synthesis
+        # time, and marking it early would make the state machine's "answer began Nms after
+        # they stopped" measure the decision to speak rather than the speech.
+        def _on_first_audio() -> None:
+            self.conv.to(ConvState.AI_SPEAKING, "first audio out")
+            # _answer_one sets this for the duration of one answer, to time the gap that the
+            # visitor actually experiences - see the note there.
+            hook = getattr(self, "_first_audio_hook", None)
+            if hook is not None:
+                hook()
+
+        spoken = self.tts.speak_stream(result.pieces, on_first_audio=_on_first_audio)
         text = (spoken.get("text") or "").strip()
         print(f'[TTS] "{text}"')
         if spoken.get("time_to_first_audio_ms"):
             print(f"[TTS] (first word after {spoken['time_to_first_audio_ms']:.0f}ms, "
                   f"{spoken['num_segments']} sentence(s))")
+        # The intent is read AFTER the stream has been spoken: a streamed general answer starts
+        # as GENERAL_CHAT and is corrected once the model's label line has been parsed, which
+        # happens while it is being consumed (2026-10-27).
+        if intent is None:
+            intent = getattr(getattr(result, "intent", None), "name", None)
         self._record("robot", text, intent)
         return text
 
-    def _report_turn_latency(self, tracker: "LatencyTracker") -> None:
+    def _report_turn_latency(self, tracker: "LatencyTracker",
+                             stopped_at: float | None = None,
+                             filler_at: float | None = None,
+                             answer_at: float | None = None) -> None:
         """Prints where the time actually went for one question, against STAGES.md's own target.
 
         Stage 09 has shipped LatencyTracker since it was written and NOTHING has ever imported
@@ -1449,12 +2001,25 @@ class RobotOrchestrator:
         m = tracker.measurements
         if not m:
             return
+        if "first_audio" not in m:
+            print(f"[latency] retrieve+generate={m.get('retrieve+generate', 0.0):.0f}ms | no "
+                  f"answer audio (interrupted or stopped before the first word)")
+            return
         # Time-to-first-WORD is the number that matters to a person standing there, not the
         # total: the robot is already talking while the rest of the answer generates.
         to_first_word = m.get("retrieve+generate", 0.0) + m.get("first_audio", 0.0)
         parts = " ".join(f"{k}={v:.0f}ms" for k, v in m.items())
+        # Measured from when the visitor's voice stopped (2026-10-27), which also counts the
+        # endpointer's silence wait and the speech recognition - the wait they really have.
+        heard = ""
+        if stopped_at is not None and answer_at is not None:
+            to_first_word = (answer_at - stopped_at) * 1000
+            heard = " (from the end of their voice"
+            if filler_at is not None:
+                heard += f"; a filler covered it after {(filler_at - stopped_at) * 1000:.0f}ms"
+            heard += ")"
         verdict = "OK" if to_first_word <= ANSWER_LATENCY_TARGET_MS else "SLOW"
-        print(f"[latency] {parts} | time-to-first-word {to_first_word:.0f}ms "
+        print(f"[latency] {parts} | time-to-first-word {to_first_word:.0f}ms{heard} "
               f"({verdict} vs {ANSWER_LATENCY_TARGET_MS:.0f}ms target)")
 
     def _answer_one(self, question: str) -> bool:
@@ -1462,8 +2027,18 @@ class RobotOrchestrator:
         # happen behind it - see stage06's filler_bank.py. Started before the dialogue call, not
         # after, which is the whole point: the silence being covered is the silence that starts
         # the instant the visitor stops talking.
-        filler = self.fillers.play_async() if self.fillers is not None else None
+        # FILLER_MODE=always: the old behaviour, an acknowledgment for every question. The
+        # default "auto" decides below, once it knows whether the answer is slow.
+        filler = None
+        filler_at = None
+        if self.fillers is not None and RT.FILLER_MODE == "always":
+            filler = self.fillers.play_async()
+            filler_at = time.monotonic()
         tracker = LatencyTracker()
+        self.conv.to(ConvState.THINKING, "retrieval + generation")
+        rt_log("LLM", f"started generation ({len(self._visit_history)} turn(s) of context "
+                      f"carried, so follow-ups like \"how long does it take to walk there?\" "
+                      f"still resolve)")
 
         # Everything said so far this visit, so a follow-up ("how long is it?") still
         # knows what "it" refers to - see dialogue_manager's _contextualize().
@@ -1483,6 +2058,25 @@ class RobotOrchestrator:
         print(f"[dialogue] intent={result.intent.name}, {len(result.used_chunks)} chunk(s) "
               f"used, streaming={result.is_streaming}, question={question!r}")
 
+        # FILLER_MODE=auto: wait for the first words of the answer until FILLER_DELAY_MS after
+        # the visitor stopped talking. Ready by then (identity questions, cached and fast
+        # answers): no filler, the answer just starts. Not ready: a short "Mm, okay." covers
+        # the rest of the wait, so the visitor never stands in front of a silent robot.
+        if filler is None and self.fillers is not None and RT.FILLER_MODE == "auto":
+            # Counted from when their voice stopped, not from when the endpointer committed -
+            # the silence they hear starts at the former.
+            finished_at = (getattr(self, "_visitor_stopped_at", None)
+                           or getattr(self, "_turn_finished_at", None) or time.monotonic())
+            if time.monotonic() - finished_at > 30.0:
+                finished_at = time.monotonic()   # stale: not from this question
+            budget = RT.FILLER_DELAY_MS / 1000.0 - (time.monotonic() - finished_at)
+            ready = getattr(result.pieces, "ready", None)
+            if ready is not None and not ready.wait(max(0.0, budget)):
+                rt_log("TTS", f"answer not ready {RT.FILLER_DELAY_MS}ms after the question - "
+                              f"acknowledging while it finishes")
+                filler = self.fillers.play_async()
+                filler_at = time.monotonic()
+
         # Wait for the acknowledgment to finish before the real answer starts, so the robot
         # never talks over itself. By now it has almost always finished already - that overlap
         # is exactly what was bought by starting it early.
@@ -1492,11 +2086,29 @@ class RobotOrchestrator:
         # The intent is stored on the answer line so the saved transcript keeps the same "why
         # did it answer that way" trace the console log has - a row of apologies in the database
         # with no route attached is a lot harder to diagnose weeks later.
-        with tracker.measure("first_audio"):
-            interrupted = self._speak_interruptible(
-                lambda: self._speak_stream(result, intent=result.intent.name)
-            )
-        self._report_turn_latency(tracker)
+        # MEASURED WITH A TIMESTAMP, NOT A CONTEXT MANAGER. tracker.measure() times the whole
+        # block, and this block BLOCKS until the robot has finished speaking - so "first_audio"
+        # was really reporting the length of the answer. A real run (2026-09-17) printed
+        # "first_audio=2453ms ... SLOW" for a reply whose first word was actually out in 156ms:
+        # the robot was being told off for talking for two seconds. Every latency verdict on
+        # the answer path has been wrong in that direction since the tracker was first wired up.
+        #
+        # The honest number is the gap between starting to speak and the first sound reaching
+        # the speaker, which is exactly when on_first_audio fires (see _speak_stream).
+        speak_started = time.monotonic()
+        first_audio_at: list[float] = []
+        self._first_audio_hook = lambda: first_audio_at.append(time.monotonic())
+        try:
+            interrupted = self._speak_interruptible(lambda: self._speak_stream(result))
+        finally:
+            self._first_audio_hook = None
+        if first_audio_at:
+            tracker.measurements["first_audio"] = (first_audio_at[0] - speak_started) * 1000
+        stopped_at = getattr(self, "_visitor_stopped_at", None)
+        if stopped_at is not None and speak_started - stopped_at > 30.0:
+            stopped_at = None   # stale - this question did not come from a fresh turn
+        self._report_turn_latency(tracker, stopped_at, filler_at,
+                                  first_audio_at[0] if first_audio_at else None)
         return interrupted
 
     def _listen_with_retry(self, timeout_s: float) -> str | None:
@@ -1563,7 +2175,7 @@ class RobotOrchestrator:
             self._speak(_pick(_REPAIR_NO_CONTEXT))
         return self._listen(LISTEN_TIMEOUT_S)
 
-    def _handle_conversation(self) -> None:
+    def _handle_conversation(self, first_question: str | None = None) -> None:
         """Answers questions in a loop - "do you have any other questions?" after each answer -
         instead of ending the visit after exactly one question. Found from a real test run
         (2026-08-12): the old code asked to remember the visitor immediately after the first
@@ -1578,7 +2190,7 @@ class RobotOrchestrator:
         visitor who just asks their next question directly, e.g. "Where is the Engineering
         Department?", without first saying "yes") is treated AS that next question and answered
         immediately instead of being discarded."""
-        question = self._listen_with_retry(LISTEN_TIMEOUT_S)
+        question = first_question or self._listen_with_retry(LISTEN_TIMEOUT_S)
         questions_answered = 0
         repairs_used = 0
         interruptions_used = 0
@@ -1587,6 +2199,12 @@ class RobotOrchestrator:
             # Checked before every answer, not just at the start: an answer takes seconds, and
             # somebody who has already walked off should not be talked at for the rest of them.
             if self._abandon_if_alone():
+                return
+
+            # "No thanks, that's all" where a question was expected - typically after they cut
+            # an answer short - is a goodbye, not something to look up.
+            if questions_answered and _sounds_like_goodbye(question):
+                self._speak(_pick(_GOODBYE_AFTER_HELP))
                 return
 
             # "wait" / "no no, that's not what I meant" is a command, not a question. Handled
@@ -1624,6 +2242,8 @@ class RobotOrchestrator:
 
             interrupted = self._answer_one(question)
             questions_answered += 1
+            if not interrupted:
+                self._acknowledge_newcomers()
 
             if interrupted:
                 # They started talking over the answer. Skip "anything else?" entirely - they
@@ -1638,6 +2258,49 @@ class RobotOrchestrator:
             # and leaves while it is still speaking.
             if self._abandon_if_alone():
                 return
+
+            # --- continuous mode: just listen, don't prompt ------------------------------------
+            # In a real conversation nobody says "do you have any other questions?" after every
+            # sentence - they stop talking, and the other person either speaks or doesn't. Asking
+            # first makes every turn wait on a robot prompt, which is the conversational
+            # equivalent of pressing a button to talk, and it is what made this feel like
+            # submitting separate voice recordings rather than having a conversation.
+            #
+            # So: listen first. If they ask something, answer it - no prompt, no "yes" needed.
+            # Only if they stay silent does the robot fall through to the prompt below, which is
+            # exactly where a prompt belongs: the visitor has gone quiet and the robot needs to
+            # find out whether they are done or just thinking.
+            #
+            # Nothing is lost by this. The prompt path, the bare-"yes" handling and the
+            # clear-negative exit are all still there and still reachable - they just stop being
+            # mandatory. CONVERSATION_MODE=push_to_talk (or CONTINUOUS_CONVERSATION=false)
+            # restores the always-prompt behaviour exactly as it was.
+            if not RT.push_to_talk():
+                rt_log("TURN", "continuous mode - listening for a follow-up without prompting")
+                follow_up = self._listen_with_retry(CONSENT_LISTEN_TIMEOUT_S)
+                if follow_up:
+                    # NOTE the `if follow_up` guard, which is load-bearing.
+                    # _is_clear_negative() treats silence as a clear "no more questions", and it
+                    # is right to: everywhere else it is called, the robot has just ASKED
+                    # "anything else?", and saying nothing in reply to a direct question does
+                    # mean no. Here nothing has been asked, so silence means only that they have
+                    # not started talking yet - it must fall through to the prompt below, not
+                    # end the visit. Calling _is_clear_negative on it unguarded made the robot
+                    # say goodbye the moment a visitor paused to think after an answer.
+                    if _is_clear_negative(follow_up):
+                        self._speak(_pick(_GOODBYE_AFTER_HELP))
+                        return
+                    if _is_bare_affirmation(follow_up):
+                        # "yeah" on its own with no prompt in front of it is somebody gathering
+                        # their thoughts, not an answer to anything. Give them the longer window
+                        # to actually ask it.
+                        question = self._listen_with_retry(LISTEN_TIMEOUT_S)
+                    else:
+                        question = follow_up
+                    continue
+                if self._abandon_if_alone():
+                    return
+                # Silence. NOW the prompt earns its place.
 
             self._speak(_pick(_MORE_QUESTIONS))
             # Also retried: an empty transcript here used to read as "no more questions" and end
@@ -1664,6 +2327,45 @@ class RobotOrchestrator:
         # final unheard/empty `question` (falls out of the while condition - already implicitly
         # "no more" the same way the pre-2026-08-19 "not question" timeout case worked).
 
+    def _acknowledge_newcomers(self) -> None:
+        """Says "I'll be with you in a moment" once, between answers, if somebody new walked up
+        during this visit (queued by the camera loop). Between answers because that is the one
+        moment it interrupts nobody."""
+        waiting = getattr(self, "_newcomers_waiting", None)
+        if not waiting or not RT.ACKNOWLEDGE_NEWCOMERS:
+            return
+        with self._state_lock:
+            fresh = set(self._newcomers_waiting) - self._newcomers_acknowledged
+            self._newcomers_acknowledged |= fresh
+            self._newcomers_waiting.clear()
+        if fresh:
+            print(f"[visit] {len(fresh)} more visitor(s) waiting - letting them know.")
+            self._speak(_pick(_NEWCOMER_ACK))
+
+    def _speaker_from_lip_history(self, candidate_ids: list[int]) -> int | None:
+        """Who did the talking this visit, from the lip history: the candidate whose lips were
+        moving most while facing the robot, over the whole visit. Much steadier than "whose
+        mouth is moving right now", which at the end of a visit is usually nobody's.
+
+        Only meaningful when lip-history face ids are presence track ids (face presence)."""
+        history = getattr(self, "lip_history", None)
+        since = getattr(self, "_visit_started_at", None)
+        if history is None or since is None or getattr(self, "face_presence", None) is None:
+            return None
+        _frames, faces = history.summarize(since, time.monotonic())
+        scored = [(f.speaking_fraction, f.face_id) for f in faces
+                  if f.face_id in candidate_ids and f.facing_fraction >= 0.3]
+        if not scored:
+            return None
+        scored.sort(reverse=True)
+        best_fraction, best = scored[0]
+        if best_fraction < 0.1:
+            return None
+        # Two people talking about equally much: do not guess (see PRIVACY.md).
+        if len(scored) > 1 and scored[1][0] >= best_fraction * 0.8:
+            return None
+        return best
+
     def _active_speaker_track_id(self, candidate_ids: list[int]) -> int | None:
         """Which of these tracked people is the one actually talking to the robot, judged by
         whose mouth has been moving (see stage02's mouth_activity.py).
@@ -1679,7 +2381,12 @@ class RobotOrchestrator:
         answer; "I'm not sure who spoke" is a legitimate and common outcome (one person facing
         away, poor lighting), and the safe response to it is to fall back rather than guess.
         """
-        if self.mouth_detector is None or not candidate_ids:
+        if not candidate_ids:
+            return None
+        from_history = self._speaker_from_lip_history(candidate_ids)
+        if from_history is not None:
+            return from_history
+        if self.mouth_detector is None:
             return None
         with self._state_lock:
             activities = list(self._activities)
@@ -1752,6 +2459,8 @@ class RobotOrchestrator:
         it, and whoever answered "yes" would have their name attached to whichever face the loop
         happened to be on at the time. Now it asks once, of whoever was speaking."""
         candidate_ids = [p.track_id for p in arriving]
+        if not candidate_ids:
+            return  # woken by voice with nobody on camera - no face to remember
         tid = self._active_speaker_track_id(candidate_ids)
 
         if tid is None:
@@ -1807,7 +2516,8 @@ class RobotOrchestrator:
 
         self._speak(f"Nice to meet you, {name}! I'll remember you next time.")
 
-    def _run_visit(self, arriving: list[Person], detected_at: float | None = None) -> None:
+    def _run_visit(self, arriving: list[Person], detected_at: float | None = None,
+                   woken: bool = False) -> None:
         """One complete visit - greet, answer questions, offer to remember - start to finish.
 
         Runs on its OWN thread (see run()). Everything in here blocks for real seconds at a time:
@@ -1822,7 +2532,28 @@ class RobotOrchestrator:
         # the saved transcript (that's the line naming who the robot thought it was talking to).
         person_id = self._initial_conversation_person(arriving)
         self._begin_conversation(person_id)
+        self._visit_started_at = time.monotonic()
+        self._woken_visit = woken
+        if hasattr(self, "addressee"):
+            self.addressee.reset()
         try:
+            if woken:
+                # Called by voice ("hey Nova"): no greeting - they already started the
+                # conversation. If the question follows in the same breath it is answered
+                # straight away; if they wait, the robot says "Yes?" like a person would.
+                self._voice_presence_until = time.monotonic() + VOICE_PRESENCE_S
+                self._keep_backlog = True
+                self.greeting_sm.state = RobotState.LISTENING
+                self.expression.set_state(RobotState.LISTENING)
+                first = self._listen(1.5)
+                if not first:
+                    self._speak(_pick(_WAKE_REPLIES))
+                self._handle_conversation(first_question=first or None)
+                self._attribute_conversation_to_speaker(arriving)
+                self._handle_consent_for_speaker(arriving)
+                self.greeting_sm.on_interaction_timeout_or_done()
+                return
+
             # Only for a visitor the robot recognizes AND is alone with. In a group the recall
             # would be spoken over everyone - "did you get anywhere with the Master of Computer
             # Science?" in front of three strangers is a privacy problem, not a nice touch.
@@ -1886,6 +2617,8 @@ class RobotOrchestrator:
             # In `finally` so a crashed visit still closes its transcript instead of leaving a
             # row with a NULL ended_at that reads, forever, like a conversation still going on.
             self._end_conversation()
+            self._woken_visit = False
+            self._voice_presence_until = 0.0
 
     def _mark_visit_recorded(self) -> None:
         """Advances last_seen/visit_count for the person this visit belonged to.
@@ -1964,8 +2697,119 @@ class RobotOrchestrator:
             # already saved. The robot simply knows less next time.
             print(f"[memory] could not learn from this visit ({exc!r}).")
 
+    def _detect_people(self, frame) -> list:
+        """This frame's people, from whichever presence backend is running."""
+        if self.face_presence is not None:
+            return self.face_presence.detect_people(frame)
+        return detect_people(self.yolo, frame)
+
+    def _update_engagement(self, people, frame_width: int, now: float) -> set[int]:
+        """Track ids that are near, facing the robot and have stayed (engagement.py).
+
+        People without face landmarks (the YOLO backend gives none) cannot be judged, so the gate
+        lets them through - exactly the old behaviour."""
+        if not RT.ENGAGEMENT_GATE:
+            return {p.track_id for p in people}
+        engaged: set[int] = set()
+        for p in people:
+            landmarks = getattr(p, "landmarks", None)
+            if not landmarks:
+                engaged.add(p.track_id)
+            elif self.engagement.observe(p.track_id, p.bbox, landmarks, frame_width, now):
+                engaged.add(p.track_id)
+        return engaged
+
+    def _update_mouths(self, frame, people, now: float) -> list:
+        """Mouth activity for this frame, and one timestamped row of the lip history the
+        addressee check reads (whose lips moved, who was facing the robot)."""
+        if self.mouth_detector is None:
+            return []
+        try:
+            if self.face_presence is not None:
+                # The presence tracks ARE faces, so the mesh runs on each face crop and its
+                # face_id is the presence track id - no geometry join needed.
+                activities = self.mouth_detector.update_faces(
+                    frame, [(p.track_id, p.bbox) for p in people])
+            else:
+                activities = self.mouth_detector.update(frame)
+        except Exception as exc:
+            print(f"[mouth] detector failed ({exc!r}) - disabling active speaker detection for "
+                  f"the rest of this run; the robot falls back to answering whoever it "
+                  f"recognized first.")
+            self.mouth_detector = None
+            activities = []
+        with self._state_lock:
+            self._activities = activities
+        samples = []
+        for a in activities:
+            yaw = getattr(a, "yaw", None)
+            facing = True if yaw is None else abs(yaw) <= RT.ENGAGE_MAX_YAW
+            samples.append(FaceSample(a.face_id, bool(a.is_speaking), facing))
+        self.lip_history.record(samples, now)
+        return activities
+
+    def _recognize(self, frame, people) -> dict:
+        """{track_id: FaceDetection} for this frame. With face presence, the faces it already
+        found are embedded directly (describe_faces) - no second full-resolution detection."""
+        if self.face_presence is not None:
+            detections = self.embedder.describe_faces(
+                frame, [(p.bbox, p.landmarks, p.score) for p in people])
+        else:
+            detections = self.embedder.detect(frame)
+        return match_faces_to_people(people, detections)
+
+    def _idle_audio_loop(self) -> None:
+        """Reads the microphone while no visit is running.
+
+        Two jobs. The always-on wake word (WAKE_WORD_ENGINE=openwakeword) listens here. And the
+        queue is kept empty: before this existed nothing read the microphone between visits, so
+        audio_q grew by ~32KB a second for as long as the robot stood idle - over 100MB an hour,
+        all of it thrown away by the next visit's stale-audio drain anyway.
+        """
+        detector = self.wake_detector
+        while not self._shutting_down.is_set():
+            if self._visit_active.is_set():
+                time.sleep(0.05)
+                continue
+            try:
+                frame = self.audio_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if detector is None:
+                continue
+            try:
+                heard = detector.process(frame)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[wake] wake word detector failed ({exc!r}) - switched off.")
+                detector = None
+                continue
+            if heard and self._wake_requested_at is None:
+                print(f"[wake] heard the wake word (score {detector.last_score:.2f})")
+                rt_log("TURN", "woken by voice - starting a conversation")
+                # Stop reading NOW: the question often follows in the same breath, and the
+                # visit thread needs those frames.
+                self._visit_active.set()
+                self._wake_requested_at = time.monotonic()
+                detector.reset()
+
     def run(self) -> None:
-        print("Live robot running. Press 'q' in the preview window to quit.")
+        print("Live robot running. " + ("Stop it with Ctrl+C." if RT.HEADLESS else
+                                        "Press 'q' in a robot window to quit (or Ctrl+C)."))
+        # Printed every start, because these settings decide how the robot FEELS to talk to,
+        # and "it interrupted me" / "it waited too long" / "it answered my friend" are all
+        # answered by these lines. Run `python stages/stage00_setup/realtime_config.py` for the
+        # full list and where each value came from.
+        print(f"Conversation: "
+              f"{'push-to-talk' if RT.push_to_talk() else 'continuous (hands-free)'} | "
+              f"turn ends between {RT.MIN_SILENCE_DURATION}ms and {RT.MAX_SILENCE_DURATION}ms "
+              f"of silence ({RT.END_OF_TURN_TIMEOUT}ms when the pitch cannot be read; "
+              f"turn detector={RT.TURN_DETECTOR}) | interruption={RT.INTERRUPTION_ENABLED} | "
+              f"streaming STT={RT.STREAMING_STT}, TTS={RT.STREAMING_TTS}")
+        print(f"Attention: presence={'faces' if self.face_presence is not None else 'YOLO'} "
+              f"(up to {RT.VISION_FPS:.0f}fps) | engagement gate={RT.ENGAGEMENT_GATE} | "
+              f"addressee check={RT.ADDRESSEE_CHECK} | wake word={RT.WAKE_WORD_ENGINE} | "
+              f"echo cancellation={'on' if self.echo is not None else 'off'} | "
+              f"fillers={RT.FILLER_MODE} | back-channels={'on' if self.backchannels else 'off'}")
         pending_since: dict[int, float] = {}
         # When each track was first detected, kept separately because pending_since is popped on
         # the way to a greeting - this is the clock STAGES.md's "under a second from a person
@@ -1975,6 +2819,18 @@ class RobotOrchestrator:
         last_recognized_at = 0.0  # monotonic clock of the last recognition pass
         last_quality_log_at = 0.0  # so the "ignoring this face" notice cannot flood the console
         visit_thread: threading.Thread | None = None
+        visit_ids: set[int] = set()
+        people: list = []
+        seen_ids: set[int] = set()
+        engaged_ids: set[int] = set()
+        activities: list = []
+        last_vision_at = 0.0
+        # VISION_FPS caps the heavy work (detection, mouths, recognition). The camera is still
+        # read every loop - frames never go stale in the driver - and the face on the screen
+        # still animates at the camera's own rate.
+        vision_interval = 1.0 / RT.VISION_FPS
+        show_preview = RT.CAMERA_PREVIEW and not RT.HEADLESS
+        any_window = show_preview or self.face_display is not None
 
         try:
             with self.mic_stream:
@@ -1982,13 +2838,25 @@ class RobotOrchestrator:
                 # on - it costs a spoken sentence at startup, which is not worth paying for a
                 # threshold nothing will read.
                 if BARGE_IN_ENABLED:
-                    print("Calibrating barge-in (stay quiet for a moment)...")
+                    print(f"Calibrating barge-in (stay quiet for a moment) - "
+                          f"INTERRUPTION_ENABLED={RT.INTERRUPTION_ENABLED}...")
                     self._barge_in_threshold = self._calibrate_barge_in()
+                    if self._barge_in_threshold is not None:
+                        print("[barge-in] ON - you can talk over the robot and it will stop.")
+                    else:
+                        print("[barge-in] OFF - the robot will finish each answer before "
+                              "listening again.")
+                else:
+                    print("[barge-in] OFF (INTERRUPTION_ENABLED=false) - not calibrating.")
 
                 # Keeps the university data current without anybody restarting the robot, and
                 # catches up immediately when startup began from an expired cache.
                 threading.Thread(
                     target=self._refresh_knowledge_base, name="kb-refresh", daemon=True
+                ).start()
+                # Reads the microphone between visits (wake word, and keeps the queue empty).
+                threading.Thread(
+                    target=self._idle_audio_loop, name="idle-audio", daemon=True
                 ).start()
 
                 while True:
@@ -1996,143 +2864,183 @@ class RobotOrchestrator:
                     if not ok:
                         print("Could not read a frame - stopping.")
                         break
-
-                    people = detect_people(self.yolo, frame)
-                    seen_ids = {p.track_id for p in people}
-                    entered_ids, left_ids = self.presence.update(seen_ids)
-
-                    with self._state_lock:
-                        self._seen_ids = seen_ids
-                        # Stamped only while somebody is actually visible, so the conversation
-                        # thread can tell "nobody has been here for N seconds" from "nobody is
-                        # in this single frame" - see ABSENCE_GRACE_S.
-                        if seen_ids:
-                            self._last_seen_at = time.monotonic()
-                        for tid in left_ids:
-                            self._resolved_names.pop(tid, None)
-                            self._resolved_person_ids.pop(tid, None)
-                            self._last_embedding_by_track.pop(tid, None)
-                            self._identity_votes.pop(tid, None)
-                            self._face_quality_by_track.pop(tid, None)
-                            # Was missing, and it is what put several boxes on one face: every
-                            # other per-track dict was cleaned up here, so a track that went
-                            # away left its LAST face box behind in _face_bbox_by_track for the
-                            # rest of the run, and _draw_overlay kept drawing it. Moving around
-                            # is exactly what makes YOLO drop a track and re-id the same person
-                            # under a new number, so one person walking about accumulated a
-                            # trail of frozen boxes at every place they had paused.
-                            self._face_bbox_by_track.pop(tid, None)
-                            self._face_bbox_at.pop(tid, None)
-                            pending_since.pop(tid, None)
-                            first_seen_at.pop(tid, None)
-                            ready_to_greet.discard(tid)
-
-                    for tid in entered_ids:
-                        pending_since[tid] = time.monotonic()
-                        first_seen_at[tid] = pending_since[tid]
-
-                    # Mouth movement, every frame - unlike face recognition below, this NEEDS
-                    # every frame: the signal is how much the mouth ratio varies over time, so
-                    # sampling it on an interval would throw away most of the variation it's
-                    # trying to measure (and alias fast lip movement into apparent stillness).
-                    # It's cheap enough to afford - see mouth_activity.py.
-                    if self.mouth_detector is not None:
-                        try:
-                            activities = self.mouth_detector.update(frame)
-                        except Exception as exc:
-                            print(f"[mouth] detector failed ({exc!r}) - disabling active speaker "
-                                  f"detection for the rest of this run; the robot falls back to "
-                                  f"answering whoever it recognized first.")
-                            self.mouth_detector = None
-                            activities = []
-                        with self._state_lock:
-                            self._activities = activities
-
-                    if people and time.monotonic() - last_recognized_at >= RECOGNIZE_INTERVAL_S:
-                        last_recognized_at = time.monotonic()
-                        face_detections = self.embedder.detect(frame)
-                        matches = match_faces_to_people(people, face_detections)
-                        for tid, det in matches.items():
-                            # A face too small, too blurry or too weakly detected produces a
-                            # perfectly well-formed embedding of nothing in particular - see the
-                            # quality-gating note in sface_embedder.py. Skipping it entirely is
-                            # right: the next pass is RECOGNIZE_INTERVAL_S away, and answering
-                            # "unknown" for a moment costs nothing next to matching against mush.
-                            if not det.is_usable:
-                                if time.monotonic() - last_quality_log_at >= QUALITY_LOG_INTERVAL_S:
-                                    last_quality_log_at = time.monotonic()
-                                    print(f"[face] ignoring track #{tid}: {det.quality_reason()}")
-                                continue
-
-                            with self._state_lock:
-                                self._last_embedding_by_track[tid] = det.embedding
-                                self._face_bbox_by_track[tid] = det.bbox
-                                self._face_bbox_at[tid] = time.monotonic()
-                                self._face_quality_by_track[tid] = det
-                                match = self.face_store.find_match(det.embedding)
-                                # Only reinforce from a face good enough to STORE. Reinforcing
-                                # on every match was quietly feeding whatever the camera happened
-                                # to catch - including motion-blurred and half-turned frames -
-                                # into somebody's permanent reference samples, making the
-                                # recognizer worse at them over time.
-                                if match and det.is_enrollable:
-                                    self.face_store.reinforce(match, det.embedding)
-
-                                # One frame does not decide who somebody is - see _vote_identity.
-                                settled = self._vote_identity(tid, match)
-                                if settled is not None:
-                                    self._resolved_names[tid] = settled.name
-                                    self._resolved_person_ids[tid] = settled.person_id
-
-                            if settled is not None and tid in pending_since:
-                                pending_since.pop(tid)
-                                ready_to_greet.add(tid)
-
                     now = time.monotonic()
-                    for tid in [
-                        t for t, since in pending_since.items() if now - since >= RECOGNITION_WAIT_S
-                    ]:
-                        pending_since.pop(tid)
-                        ready_to_greet.add(tid)
 
-                    # Drop anyone who became "ready" but then walked off before a greeting fired.
-                    ready_to_greet &= seen_ids
+                    if now - last_vision_at >= vision_interval:
+                        last_vision_at = now
+                        people = self._detect_people(frame)
+                        seen_ids = {p.track_id for p in people}
+                        entered_ids, left_ids = self.presence.update(seen_ids)
+
+                        with self._state_lock:
+                            self._seen_ids = seen_ids
+                            # Stamped only while somebody is actually visible, so the
+                            # conversation thread can tell "nobody has been here for N seconds"
+                            # from "nobody is in this single frame" - see ABSENCE_GRACE_S.
+                            if seen_ids:
+                                self._last_seen_at = now
+                            for tid in left_ids:
+                                self._resolved_names.pop(tid, None)
+                                self._resolved_person_ids.pop(tid, None)
+                                self._last_embedding_by_track.pop(tid, None)
+                                self._identity_votes.pop(tid, None)
+                                self._face_quality_by_track.pop(tid, None)
+                                # Every per-track dict is cleaned up here - a box left behind
+                                # is what used to put a trail of frozen boxes on screen.
+                                self._face_bbox_by_track.pop(tid, None)
+                                self._face_bbox_at.pop(tid, None)
+                                self._newcomers_waiting.discard(tid)
+                                pending_since.pop(tid, None)
+                                first_seen_at.pop(tid, None)
+                                ready_to_greet.discard(tid)
+                        for tid in left_ids:
+                            self.engagement.forget(tid)
+
+                        for tid in entered_ids:
+                            pending_since[tid] = now
+                            first_seen_at[tid] = now
+
+                        if entered_ids:
+                            # Somebody just walked up: find out NOW, in the background, whether
+                            # the cloud model is answering, so their first question does not
+                            # have to find out the expensive way. Debounced inside probe_now().
+                            self._probe_answer_backends("visitor detected")
+
+                        engaged_ids = self._update_engagement(people, frame.shape[1], now)
+                        # Mouth movement on every vision frame - the signal is how much the
+                        # mouth varies over time, so it needs a steady sampling rate.
+                        activities = self._update_mouths(frame, people, now)
+
+                        if people and now - last_recognized_at >= RECOGNIZE_INTERVAL_S:
+                            last_recognized_at = now
+                            matches = self._recognize(frame, people)
+                            for tid, det in matches.items():
+                                # A face too small, too blurry or too weakly detected produces
+                                # a well-formed embedding of nothing in particular - see the
+                                # quality-gating note in sface_embedder.py.
+                                if not det.is_usable:
+                                    if now - last_quality_log_at >= QUALITY_LOG_INTERVAL_S:
+                                        last_quality_log_at = now
+                                        print(f"[face] ignoring track #{tid}: "
+                                              f"{det.quality_reason()}")
+                                    continue
+
+                                with self._state_lock:
+                                    self._last_embedding_by_track[tid] = det.embedding
+                                    self._face_bbox_by_track[tid] = det.bbox
+                                    self._face_bbox_at[tid] = now
+                                    self._face_quality_by_track[tid] = det
+                                    match = self.face_store.find_match(det.embedding)
+                                    # Only reinforce from a face good enough to STORE.
+                                    if match and det.is_enrollable:
+                                        self.face_store.reinforce(match, det.embedding)
+                                    # One frame does not decide who somebody is.
+                                    settled = self._vote_identity(tid, match)
+                                    if settled is not None:
+                                        self._resolved_names[tid] = settled.name
+                                        self._resolved_person_ids[tid] = settled.person_id
+
+                                if settled is not None and tid in pending_since:
+                                    pending_since.pop(tid)
+                                    ready_to_greet.add(tid)
+
+                        for tid in [t for t, since in pending_since.items()
+                                    if now - since >= RECOGNITION_WAIT_S]:
+                            pending_since.pop(tid)
+                            ready_to_greet.add(tid)
+
+                        # Drop anyone who became "ready" but walked off before a greeting.
+                        ready_to_greet &= seen_ids
 
                     # Reap a finished visit before considering a new one.
                     if visit_thread is not None and not visit_thread.is_alive():
                         visit_thread.join()
                         visit_thread = None
+                        visit_ids = set()
+                        with self._state_lock:
+                            self._newcomers_waiting.clear()
+                            self._newcomers_acknowledged.clear()
+                        self._visit_active.clear()
 
-                    # `visit_thread is None` is the real guard here - it's owned entirely by this
-                    # thread, so it can't race. The greeting-state check is a secondary sanity
-                    # check on shared state (the visit thread is what moves that state machine),
-                    # kept because a mismatch between the two would indicate a genuine bug worth
-                    # not papering over, not because it's load-bearing on its own.
-                    if (
-                        ready_to_greet
-                        and visit_thread is None
-                        and self.greeting_sm.state == RobotState.IDLE
-                    ):
-                        arriving_ids = sorted(ready_to_greet)
+                    if (visit_thread is None and self._wake_requested_at is not None
+                            and self.greeting_sm.state == RobotState.IDLE):
+                        # Woken by voice: talk to whoever is there (possibly nobody the camera
+                        # can see - they may have called from the side).
+                        arriving_ids = sorted(seen_ids)
                         with self._state_lock:
                             arriving = [
                                 Person(track_id=tid, known_name=self._resolved_names.get(tid))
                                 for tid in arriving_ids
                             ]
-                        ready_to_greet.clear()
-                        detected_at = min(
-                            (first_seen_at.get(tid, now) for tid in arriving_ids), default=now
-                        )
                         for tid in arriving_ids:
+                            pending_since.pop(tid, None)
                             first_seen_at.pop(tid, None)
+                        ready_to_greet -= set(arriving_ids)
+                        visit_ids = set(arriving_ids)
+                        self._wake_requested_at = None
+                        self._visit_active.set()
+                        visit_thread = threading.Thread(
+                            target=self._run_visit, args=(arriving, None, True), daemon=True
+                        )
+                        visit_thread.start()
+                    elif self._wake_requested_at is not None and visit_thread is not None:
+                        self._wake_requested_at = None   # already in a conversation
+
+                    # A greeting needs someone who is ready (recognized, or given a fair chance
+                    # to be) AND engaged: near, facing the robot, and staying. Somebody walking
+                    # past, or standing across the lobby, is not greeted.
+                    greetable = sorted(t for t in ready_to_greet if t in engaged_ids)
+                    if (
+                        greetable
+                        and visit_thread is None
+                        and self.greeting_sm.state == RobotState.IDLE
+                    ):
+                        with self._state_lock:
+                            arriving = [
+                                Person(track_id=tid, known_name=self._resolved_names.get(tid))
+                                for tid in greetable
+                            ]
+                        ready_to_greet -= set(greetable)
+                        detected_at = min(
+                            (first_seen_at.get(tid, now) for tid in greetable), default=now
+                        )
+                        for tid in greetable:
+                            first_seen_at.pop(tid, None)
+                        visit_ids = set(greetable)
+                        self._visit_active.set()
                         visit_thread = threading.Thread(
                             target=self._run_visit, args=(arriving, detected_at), daemon=True
                         )
                         visit_thread.start()
+                    elif greetable and visit_thread is not None and RT.ACKNOWLEDGE_NEWCOMERS:
+                        # Somebody new walked up while the robot is busy: queue a quick "I'll be
+                        # with you in a moment" for the visit thread to say between answers.
+                        fresh = set(greetable) - visit_ids - self._newcomers_acknowledged
+                        if fresh:
+                            with self._state_lock:
+                                self._newcomers_waiting |= fresh
 
-                    self._draw_overlay(frame)
-                    cv2.imshow("Stage 08 - live robot (press q to quit)", frame)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                    # Where the face on the screen looks: at whoever is talking, else at the
+                    # nearest engaged person, else straight ahead.
+                    target = None
+                    speaker = (self.mouth_detector.most_likely_speaker(activities)
+                               if self.mouth_detector is not None and activities else None)
+                    if speaker is not None:
+                        target = speaker.bbox
+                    else:
+                        candidates = [p for p in people if p.track_id in engaged_ids] or people
+                        if candidates:
+                            target = max(candidates, key=lambda p: p.bbox[2] * p.bbox[3]).bbox
+                    self._look_x = look_x_for(target, frame.shape[1]) if target else 0.0
+
+                    if self.face_display is not None:
+                        state = (self.conv.state.name if self._visit_active.is_set()
+                                 else "IDLE")
+                        self.face_display.show(state, self.tts.level_at(), self._look_x)
+                    if show_preview:
+                        self._draw_overlay(frame)
+                        cv2.imshow("Stage 08 - live robot (press q to quit)", frame)
+                    if any_window and cv2.waitKey(1) & 0xFF == ord("q"):
                         break
 
                 # Wind the visit down HERE, still inside `with self.mic_stream`, so the
@@ -2148,7 +3056,10 @@ class RobotOrchestrator:
             # immediately, and the event is already set.
             self._wind_down(visit_thread)
             self.cap.release()
-            cv2.destroyAllWindows()
+            if self.face_display is not None:
+                self.face_display.close()
+            if any_window:
+                cv2.destroyAllWindows()
             if self.mouth_detector is not None:
                 self.mouth_detector.close()
             if self.db is not None:
@@ -2172,12 +3083,30 @@ class RobotOrchestrator:
         already = self._shutting_down.is_set()
         self._shutting_down.set()
         self.tts.stop_requested.set()
+        # Stop the background LLM re-check (stage05's ChainAnswerGenerator), so a parked cloud
+        # backend is not still being probed while the rest of this tears down. It is a daemon
+        # thread and would not hold the process open regardless - this just means it stops when
+        # asked rather than up to ten minutes later, mid-shutdown.
+        closer = getattr(getattr(self, "dialogue", None), "answer_generator", None)
+        if hasattr(closer, "close"):
+            try:
+                closer.close()
+            except Exception:  # noqa: BLE001 - never let cleanup stop a shutdown
+                pass
         if visit_thread is not None and visit_thread.is_alive():
             if not already:
                 print("Waiting for the current conversation to wrap up...")
             visit_thread.join(timeout=SHUTDOWN_JOIN_TIMEOUT_S)
             if visit_thread.is_alive():
                 print("The conversation thread did not stop in time - exiting anyway.")
+        # The always-running speaker stream (echo cancellation keeps one open) - after the
+        # visit thread, which may still be finishing a sentence on it.
+        player = getattr(self, "player", None)
+        if player is not None and hasattr(player, "close"):
+            try:
+                player.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _drawable_boxes(self, now: float) -> dict[int, tuple[int, int, int, int]]:
         """The face boxes it is still honest to draw, out of everything recognition has stored.
@@ -2472,8 +3401,134 @@ def _self_test() -> None:
     print("[self-test] an empty transcript gets a second chance; silence and an empty room "
           "do not")
 
+    # --- continuous vs push-to-talk conversation flow -----------------------------------------
+    # The behavioural half of the real-time work: in continuous mode a follow-up question is
+    # answered without the robot first asking "do you have any other questions?". That prompt is
+    # what made every turn wait on the robot, and removing it from the common path is the
+    # difference between a conversation and a series of voice recordings. It must still appear
+    # when the visitor actually goes quiet, and push_to_talk must still behave exactly as before.
+    def _conversation(results, *, push_to_talk):
+        """A stand-in orchestrator that runs _handle_conversation against scripted replies."""
+        o = RobotOrchestrator.__new__(RobotOrchestrator)
+        o._state_lock = threading.Lock()
+        o.said = []
+        o.answered = []
+        o._visit_history = []
+        o.conv = ConversationStateMachine(debug=False)
+        pending = list(results)
+
+        def _listen(timeout_s):
+            return pending.pop(0) if pending else None
+
+        o._listen = _listen
+        o._speak = lambda text, intent=None: o.said.append(text)
+        o._visitor_present = lambda: True
+        o._abandon_if_alone = lambda: False
+        o._last_heard_reliable = lambda: True
+
+        def _answer_one(question):
+            o.answered.append(question)
+            return False  # not interrupted
+
+        o._answer_one = _answer_one
+        return o
+
+    original_mode = RT.CONVERSATION_MODE
+    original_continuous = RT.CONTINUOUS_CONVERSATION
+    try:
+        # Continuous: two questions in a row, answered back to back, with no "anything else?"
+        # between them.
+        RT.CONVERSATION_MODE, RT.CONTINUOUS_CONVERSATION = "continuous", True
+        o = _conversation(
+            ["where is the engineering department",
+             "how long does it take to walk there",
+             None, None],
+            push_to_talk=False,
+        )
+        o._handle_conversation()
+        assert o.answered == ["where is the engineering department",
+                              "how long does it take to walk there"], (
+            f"both questions should have been answered back to back, got {o.answered}"
+        )
+        prompts = [s for s in o.said if s in _MORE_QUESTIONS]
+        assert len(prompts) <= 1, (
+            f"continuous mode must not prompt between answers - said {o.said}"
+        )
+        print(f"[self-test] continuous mode: {len(o.answered)} questions answered with "
+              f"{len(prompts)} 'anything else?' prompt(s) - the follow-up needed no prompt.")
+
+        # ...and the prompt still appears when they genuinely go quiet after an answer.
+        o = _conversation(["where is the library", None, None, None], push_to_talk=False)
+        o._handle_conversation()
+        assert any(s in _MORE_QUESTIONS for s in o.said), (
+            f"silence after an answer should still get a prompt - said {o.said}"
+        )
+        print("[self-test] continuous mode still prompts when the visitor goes quiet.")
+
+        # ...and a clear "no thanks" straight after an answer ends the visit politely, without a
+        # prompt having been needed at all.
+        o = _conversation(["where is the library", "no thanks"], push_to_talk=False)
+        o._handle_conversation()
+        assert any(s in _GOODBYE_AFTER_HELP for s in o.said), (
+            f"a clear negative should close the visit - said {o.said}"
+        )
+        assert not any(s in _MORE_QUESTIONS for s in o.said), (
+            "the robot asked 'anything else?' after being told 'no thanks'"
+        )
+        print("[self-test] continuous mode: 'no thanks' ends the visit without a prompt.")
+
+        # push_to_talk: the original behaviour, unchanged - a prompt after every answer.
+        RT.CONVERSATION_MODE, RT.CONTINUOUS_CONVERSATION = "push_to_talk", False
+        o = _conversation(
+            ["where is the engineering department",
+             "how long does it take to walk there",
+             None, None],
+            push_to_talk=True,
+        )
+        o._handle_conversation()
+        assert any(s in _MORE_QUESTIONS for s in o.said), (
+            f"push_to_talk must prompt after each answer - said {o.said}"
+        )
+        print("[self-test] push_to_talk mode still prompts after every answer, as before.")
+    finally:
+        RT.CONVERSATION_MODE, RT.CONTINUOUS_CONVERSATION = original_mode, original_continuous
+
+    # --- the interrupting words are carried into the next listen -------------------------------
+    # The orchestrator half of the barge-in fix (stage04 covers the capture itself). Without
+    # this, _listen()'s stale-audio drain deletes the very sentence the visitor interrupted with.
+    o = RobotOrchestrator.__new__(RobotOrchestrator)
+    o._shutting_down = threading.Event()
+    o.audio_q = queue.Queue()
+    o.conv = ConversationStateMachine(debug=False)
+    o._carried_audio = [b"\x00" * 960] * 12
+    o._record = lambda *a, **k: None
+    o.stt_engine = o.stt_listener = o.vad = None
+    seen: dict = {}
+
+    def _fake_listen(engine, listener, vad, audio_q, timeout_s=None, prefix_frames=None,
+                     on_turn_event=None):
+        seen["prefix"] = prefix_frames
+        return "I meant the AI department"
+
+    real_listen = globals()["listen_for_one_utterance"]
+    globals()["listen_for_one_utterance"] = _fake_listen
+    try:
+        o.audio_q.put(b"\x00" * 960)  # stale echo that SHOULD be drained
+        heard = o._listen(1.0)
+    finally:
+        globals()["listen_for_one_utterance"] = real_listen
+
+    assert heard == "I meant the AI department"
+    assert seen["prefix"] and len(seen["prefix"]) == 12, (
+        "the interrupting audio must reach the listener as prefix_frames - without it the "
+        "visitor has to repeat the sentence they just interrupted with"
+    )
+    assert o._carried_audio == [], "carried audio must be consumed exactly once"
+    print("[self-test] barge-in audio survives _listen()'s stale-audio drain and is used once.")
+
     print("\nOK: interruptions, course changes, phrasing variety, answer priming, consent "
-          "parsing and face-box drawing all behave - none of which needs hardware to verify.")
+          "parsing, face-box drawing, continuous/push-to-talk conversation flow and barge-in "
+          "carry-over all behave - none of which needs hardware to verify.")
 
 
 if __name__ == "__main__":
@@ -2501,9 +3556,8 @@ if __name__ == "__main__":
         if threshold is None:
             print("\nResult: barge-in is NOT usable on this hardware as it stands.")
         else:
-            print("\nResult: barge-in looks usable. Set BARGE_IN_ENABLED = True in "
-                  "stages/stage04_speech_to_text/stt_listener_live.py, then test by talking "
-                  "over the robot mid-answer.")
+            print("\nResult: barge-in looks usable. INTERRUPTION_ENABLED=auto (the default) "
+                  "switches it on at startup; test it by talking over the robot mid-answer.")
         sys.exit(0)
 
     orchestrator = RobotOrchestrator(force_refresh=force_refresh)

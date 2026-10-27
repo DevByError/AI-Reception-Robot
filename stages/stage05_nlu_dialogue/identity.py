@@ -42,12 +42,16 @@ and to see what it currently believes, and which of the three sources that came 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-CACHE_FILE = Path(__file__).resolve().parent / "identity_cache.json"
+# LUC_IDENTITY_CACHE moves it - the test suite points it at a scratch folder, so running the
+# tests can never rewrite the real robot's offline copy of its name.
+CACHE_FILE = Path(os.environ.get("LUC_IDENTITY_CACHE")
+                  or Path(__file__).resolve().parent / "identity_cache.json")
 _STAGE02_DIR = Path(__file__).resolve().parents[1] / "stage02_face_recognition"
 
 
@@ -128,7 +132,13 @@ def _rows_from_db(db) -> dict[str, str] | None:
     cache."""
     try:
         rows = db.load_identity()
-        missing = {f: v for f, v in SEED_IDENTITY.as_rows().items() if f not in rows}
+        # Seed from the last values this robot actually used (the cache mirrors the database)
+        # before the built-in defaults. Added 2026-10-27 with the SQLite fallback: a brand-new
+        # local database would otherwise rename a robot that has been "Nova" for months back to
+        # the seed name the moment MySQL was unavailable.
+        known = {**SEED_IDENTITY.as_rows(), **{k: v for k, v in (_read_cache() or {}).items()
+                                               if k in SEED_IDENTITY.as_rows() and v}}
+        missing = {f: v for f, v in known.items() if f not in rows}
         if missing:
             db.seed_identity_fields(missing)
             rows.update(missing)

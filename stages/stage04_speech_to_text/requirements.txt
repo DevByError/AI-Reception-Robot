@@ -31,3 +31,12 @@ jiwer==3.0.3
 # for no-account dependencies.
 resemblyzer==0.1.4
 scikit-learn==1.4.2
+
+# --- 2026-10-27 ---------------------------------------------------------------------------------
+livekit==1.0.0                 # echo cancellation (audio_io.py); AEC_ENABLED=auto turns it on
+protobuf==4.25.9               # livekit's dependency, kept below 5 for mediapipe
+onnxruntime==1.23.2            # smart-turn end-of-turn model (smart_turn.py)
+sherpa-onnx==2.0.1             # streaming Zipformer (stt_sherpa.py, STT_BACKEND=sherpa)
+sentencepiece==0.2.2           # Zipformer hotwords
+soundfile==0.14.0
+openwakeword==0.6.0            # optional (wake_word.py, WAKE_WORD_ENGINE=openwakeword)

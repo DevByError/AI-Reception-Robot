@@ -1,18 +1,19 @@
 """
-Stage 06 (live) - real text-to-speech via Piper (local neural TTS, embeds espeak-ng for
-phonemization), with genuine incremental streaming playback so speech actually starts as soon as
-the first synthesized audio is ready - matching STAGES.md's own success criterion:
-Time-To-First-Audio < 1-2 seconds for a medium-length sentence.
+Stage 06 (live) - real text-to-speech with genuine incremental streaming playback, so speech
+starts as soon as the first synthesized audio is ready - matching STAGES.md's own success
+criterion: Time-To-First-Audio < 1-2 seconds for a medium-length sentence.
+
+Two voices since 2026-10-27 (voice_backends.py): Kokoro-82M, which sounds like a person, and
+Piper, which is very fast. TTS_BACKEND=auto uses Kokoro when this computer can run it well and
+Piper otherwise. Synthesis runs ahead of playback on its own thread, sentences are cached, and
+all audio goes out through audio_player.AudioPlayer (device choice, echo-canceller reference,
+fast barge-in stop, mouth movement for the face).
 
 Why this isn't just "swap MockTTSEngine for a real TTSEngine" like every other live file reuses
 its mock's core class unchanged: TTSEngine.synthesize_stream() (tts_speaker.py) returns a fully
 materialized list of AudioChunks before TTSSpeaker.speak() plays anything at all - fine for the
 mock (everything's instant/fake), but structurally wrong for measuring or achieving *real*
-streaming latency, since "return the whole list" means every chunk, including the last, has to
-exist before the first one can be played. Same kind of deliberate interface evolution as Stage
-05's new GENERAL_CHAT intent - the old shape genuinely can't do the job, so this stage gets its
-own LiveTTSSpeaker instead of forcing real streaming through a batch-shaped protocol.
-tts_speaker.py itself is untouched and still passes its own self-test.
+streaming latency. tts_speaker.py itself is untouched and still passes its own self-test.
 
 LICENSING NOTE: Piper (OHF-Voice/piper1-gpl) is GPL-3.0-or-later - stronger copyleft than
 ultralytics' AGPL-3.0 (Stage 01's own licensing note). Fine for prototyping/internal use, but
@@ -24,14 +25,32 @@ Run: python tts_speaker_live.py
 
 from __future__ import annotations
 
+import queue
+import random
 import re
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable, Iterator
 
-import sounddevice as sd
-from piper import PiperVoice
+import numpy as np
+
+# Same arrangement as stage04: the numbers below keep their names and their comments, and take
+# their defaults from the one config module so a deployment can tune them without a code edit.
+import sys  # noqa: E402
+
+sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
+sys.path.append(str(Path(__file__).resolve().parents[1] / "stage04_speech_to_text"))
+from realtime_config import RT  # noqa: E402
+from audio_player import AudioPlayer  # noqa: E402
+from voice_backends import load_backend  # noqa: E402
+
+
+def rt_log(tag: str, message: str) -> None:
+    """One tagged line of the real-time trace - see stage04's identical helper."""
+    if RT.REALTIME_DEBUG:
+        print(f"[{tag}] {message}")
 
 VOICE_NAME = "en_US-amy-medium"  # real Piper voice (rhasspy/piper-voices), female, US English -
                                   # swapped from the earlier default "en_US-lessac-medium" (male)
@@ -56,7 +75,27 @@ STREAM_SENTENCE_RE = re.compile(r"^(.*?[.!?])(\s+|$)", re.DOTALL)
 # overhead, so synthesizing "Sure." on its own buys nothing and costs an audible seam before the
 # real sentence - below this, the buffer keeps growing until the next terminator. Not applied to
 # the final flush, where there is nothing left to wait for.
-MIN_STREAM_SENTENCE_CHARS = 24
+MIN_STREAM_SENTENCE_CHARS = RT.TTS_MIN_SENTENCE_CHARS  # default 24
+
+# --- getting the FIRST word out sooner ---------------------------------------------------------
+# The rule above waits for a full stop, which is right for every sentence except the first one.
+# The first is the only one with nothing already playing in front of it, so every millisecond it
+# waits is silence the visitor actually experiences - and a grounded answer's opening sentence is
+# routinely long ("The Master of Computer Science programme is offered by the Faculty of
+# Computer Science and Multimedia, and it is on the third floor."), so waiting for its terminator
+# can mean waiting for most of the answer to generate.
+#
+# So the FIRST fragment may also break at a clause boundary - a comma, semicolon, colon or dash -
+# once it is at least FIRST_CLAUSE_MIN_CHARS long. Piper renders a clause with a continuing
+# intonation rather than a falling one, so "The Master of Computer Science programme is offered
+# by the Faculty of Computer Science and Multimedia," sounds like someone mid-sentence, which is
+# exactly what it is. Every LATER fragment goes back to whole sentences: they have audio playing
+# ahead of them, so an early break buys no perceptible latency and costs intonation.
+#
+# Set TTS_FIRST_CLAUSE_FLUSH=false to go back to whole sentences throughout.
+FIRST_CLAUSE_RE = re.compile(r"^(.{%d,}?[,;:](?=\s)|.{%d,}?\s+[-–—]\s+)"
+                             % (RT.TTS_FIRST_CLAUSE_MIN_CHARS, RT.TTS_FIRST_CLAUSE_MIN_CHARS),
+                             re.DOTALL)
 
 # Abbreviations whose trailing period is not a sentence end. Without this the streaming splitter
 # cuts "Dr." / "No." mid-name and Piper reads the fragments with two falling intonations, which
@@ -90,12 +129,15 @@ def _ends_on_abbreviation(text: str) -> bool:
     return any(tail.endswith(abbrev) for abbrev in _ABBREVIATIONS)
 
 
-def _pop_sentence(buffer: str, *, final: bool) -> tuple[str | None, str]:
+def _pop_sentence(buffer: str, *, final: bool, first: bool = False) -> tuple[str | None, str]:
     """Pulls one speakable sentence off the front of a growing buffer.
 
     Returns (sentence_or_None, remaining_buffer). On final=True the whole buffer is returned
     regardless of whether it terminates properly - an LLM that stops mid-sentence (hit its token
     cap, say) should still have its last words spoken rather than silently dropped.
+
+    first=True additionally allows a clause break, for the one fragment where waiting costs
+    audible silence - see FIRST_CLAUSE_RE above.
     """
     if final:
         remainder = buffer.strip()
@@ -103,6 +145,15 @@ def _pop_sentence(buffer: str, *, final: bool) -> tuple[str | None, str]:
 
     match = STREAM_SENTENCE_RE.match(buffer)
     if not match:
+        if first and RT.TTS_FIRST_CLAUSE_FLUSH:
+            clause = FIRST_CLAUSE_RE.match(buffer)
+            if clause:
+                head = clause.group(1).strip()
+                # An abbreviation's period is not why we are here (this matched a comma, not a
+                # full stop), but "No." style fragments can still end the head - reuse the same
+                # guard rather than inventing a second one.
+                if head and not _ends_on_abbreviation(head):
+                    return head, buffer[clause.end():]
         return None, buffer
 
     sentence = match.group(1).strip()
@@ -120,65 +171,214 @@ def _pop_sentence(buffer: str, *, final: bool) -> tuple[str | None, str]:
 
 
 class LiveTTSSpeaker:
-    """Loads the Piper voice once, then synthesizes and plays sentence by sentence, starting
-    real audio playback as soon as the very first chunk of the very first sentence is ready -
-    not waiting for the whole answer to finish synthesizing first."""
+    """Loads the voice once, then synthesizes and plays sentence by sentence, starting real
+    audio playback as soon as the very first chunk of the very first sentence is ready - not
+    waiting for the whole answer to finish synthesizing first.
 
-    def __init__(self, model_path: Path = VOICE_MODEL, use_cuda: bool = False):
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"Voice model not found at {model_path} - run "
-                f"'python -m piper.download_voices {VOICE_NAME}' in this folder first (see "
-                f"README.md)."
-            )
-        self.voice = PiperVoice.load(str(model_path), use_cuda=use_cuda)
+    Since 2026-10-27:
+      - the voice is a backend (voice_backends.py): Kokoro when this computer can run it
+        comfortably, else Piper - TTS_BACKEND;
+      - synthesis runs on its own thread, AHEAD of playback, so the next sentence is ready
+        when the current one ends (before, the robot went quiet between sentences for as long
+        as each one took to synthesize);
+      - playback goes through AudioPlayer: the chosen SPEAKER_DEVICE, the echo canceller's
+        reference, small blocks for a fast barge-in stop, and the loudness the face uses;
+      - every sentence up to CACHE_MAX_CHARS is kept (TTS_AUDIO_CACHE), so fixed lines and
+        repeated answers start instantly the second time; prewarm() fills it at startup;
+      - each utterance gets a slightly different speaking rate (TTS_RATE_VARIATION).
+    """
 
-        # Set to ask the current speak()/speak_stream() call to stop at the next chunk boundary.
-        # Nothing sets it today: real barge-in also needs acoustic echo cancellation, or the
-        # robot hears its own voice through the mic and interrupts itself on every sentence (see
-        # README.md). The check costs nothing and means enabling barge-in later is a change in
-        # the ORCHESTRATOR - open the mic during playback, set this on detected speech - rather
-        # than surgery on the audio loop here.
+    CACHE_MAX_CHARS = 300
+    CACHE_MAX_BYTES = 48 * 1024 * 1024
+
+    def __init__(self, model_path: Path = VOICE_MODEL, use_cuda: bool = False,
+                 backend=None, player: AudioPlayer | None = None):
+        if backend is None:
+            backend = load_backend(RT.TTS_BACKEND, model_path, use_cuda=use_cuda,
+                                   kokoro_voice=RT.KOKORO_VOICE, kokoro_speed=RT.KOKORO_SPEED)
+        self.backend = backend
+        # The Piper voice object, kept for older callers; None when Kokoro is speaking.
+        self.voice = getattr(backend, "voice", None)
+        if player is None:
+            device = None
+            if RT.SPEAKER_DEVICE:
+                from audio_io import device_name, resolve_device
+
+                device = resolve_device(RT.SPEAKER_DEVICE, "output")
+                print(f"[audio] speaker: {device_name(device, 'output')}")
+            player = AudioPlayer(device=device)
+        self.player = player
+        self._cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        self._cache_bytes = 0
+        self._cache_lock = threading.Lock()
+
+        # Set to ask the current speak()/speak_stream() call to stop at the next block (~40ms).
+        # The orchestrator's barge-in monitor sets it when the visitor talks over the robot.
         self.stop_requested = threading.Event()
 
-    def _play_sentences(self, sentences: Iterable[str]) -> tuple[float | None, int, list[str]]:
-        """Shared playback core for speak() and speak_stream(): opens ONE output stream lazily on
-        the first synthesized chunk and keeps it open across every sentence.
+    @property
+    def sample_rate(self) -> int:
+        return int(self.backend.sample_rate)
 
-        One stream for the whole answer, rather than one per sentence, is what makes streaming
-        sound like a person talking instead of a list being read - reopening the device between
-        sentences inserts an audible click and a variable gap while the driver re-primes.
+    def level_at(self, now: float | None = None) -> float:
+        return self.player.level_at(now)
+
+    # -- the cache -------------------------------------------------------------------------------
+    @staticmethod
+    def _cache_key(text: str) -> str:
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    def _cache_get(self, text: str) -> np.ndarray | None:
+        if not RT.TTS_AUDIO_CACHE:
+            return None
+        key = self._cache_key(text)
+        with self._cache_lock:
+            pcm = self._cache.get(key)
+            if pcm is not None:
+                self._cache.move_to_end(key)
+            return pcm
+
+    def _cache_put(self, text: str, pcm: np.ndarray) -> None:
+        if not RT.TTS_AUDIO_CACHE or len(text) > self.CACHE_MAX_CHARS or pcm.size == 0:
+            return
+        key = self._cache_key(text)
+        with self._cache_lock:
+            old = self._cache.pop(key, None)
+            if old is not None:
+                self._cache_bytes -= old.nbytes
+            self._cache[key] = pcm
+            self._cache_bytes += pcm.nbytes
+            while self._cache_bytes > self.CACHE_MAX_BYTES and self._cache:
+                _, dropped = self._cache.popitem(last=False)
+                self._cache_bytes -= dropped.nbytes
+
+    def _rate(self) -> float:
+        spread = RT.TTS_RATE_VARIATION
+        return 1.0 + random.uniform(-spread, spread) if spread > 0 else 1.0
+
+    def _synth_sentence(self, sentence: str, rate: float) -> Iterator[np.ndarray]:
+        cached = self._cache_get(sentence)
+        if cached is not None:
+            yield cached
+            return
+        parts = []
+        for chunk in self.backend.synthesize(sentence, rate):
+            if self.stop_requested.is_set():
+                return
+            parts.append(chunk)
+            yield chunk
+        if parts:
+            self._cache_put(sentence, np.concatenate(parts))
+
+    def render(self, text: str, rate: float = 1.0) -> np.ndarray:
+        """The whole clip for `text`, from the cache when it is there (fillers, prewarm)."""
+        text = _sanitize_for_speech(text)
+        cached = self._cache_get(text)
+        if cached is not None:
+            return cached
+        parts = list(self.backend.synthesize(text, rate))
+        pcm = np.concatenate(parts) if parts else np.zeros(0, dtype=np.int16)
+        self._cache_put(text, pcm)
+        return pcm
+
+    def prewarm(self, lines: Iterable[str], pause_while=None,
+                stop: threading.Event | None = None) -> threading.Thread:
+        """Synthesizes fixed lines into the cache in the background, so the first time the robot
+        says them they start instantly too. Sentence by sentence, the way speak() looks them up.
+
+        pause_while: a callable; while it returns True (somebody is being served) the prewarm
+        waits, so it never takes CPU from a live conversation. stop: abandon it (shutdown)."""
+        def _run() -> None:
+            started, count = time.monotonic(), 0
+            for line in lines:
+                for sentence in _split_sentences(_sanitize_for_speech(line)):
+                    while pause_while is not None and pause_while():
+                        if stop is not None and stop.is_set():
+                            return
+                        time.sleep(0.2)
+                    if stop is not None and stop.is_set():
+                        return
+                    if self._cache_get(sentence) is None:
+                        try:
+                            self._cache_put(sentence, np.concatenate(
+                                list(self.backend.synthesize(sentence, 1.0))))
+                            count += 1
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[tts] prewarm failed on {sentence!r} ({exc!r})")
+                            return
+            rt_log("TTS", f"prewarmed {count} line(s) in {time.monotonic() - started:.1f}s")
+
+        thread = threading.Thread(target=_run, name="tts-prewarm", daemon=True)
+        thread.start()
+        return thread
+
+    # -- playing -----------------------------------------------------------------------------------
+    def play_clip(self, pcm: np.ndarray, on_first_audio=None) -> dict:
+        """Plays already-rendered audio (blocking), honouring stop_requested."""
+        return self.player.play([pcm], self.sample_rate, stop=self.stop_requested,
+                                on_first_audio=on_first_audio)
+
+    def play_clip_async(self, pcm: np.ndarray) -> threading.Thread:
+        return self.player.play_async(pcm, self.sample_rate)
+
+    def _play_sentences(self, sentences: Iterable[str],
+                        on_first_audio=None) -> tuple[float | None, int, list[str]]:
+        """Shared playback core for speak() and speak_stream().
+
+        A producer thread pulls sentences (for speak_stream that means pulling the LLM's token
+        stream too) and synthesizes them into a queue; this thread plays from the queue. So
+        generation, synthesis and playback all overlap, and the next sentence is normally ready
+        before the current one has finished playing.
         """
-        start = time.monotonic()
-        ttfa_ms: float | None = None
-        stream: sd.RawOutputStream | None = None
-        spoken: list[str] = []
+        work: "queue.Queue[tuple[str, object] | None]" = queue.Queue()
+        failure: list[BaseException] = []
+        rate = self._rate()
 
-        try:
-            for sentence in sentences:
-                if self.stop_requested.is_set():
-                    break
-                spoken.append(sentence)
-                for chunk in self.voice.synthesize(sentence):
+        def _produce() -> None:
+            try:
+                for sentence in sentences:
                     if self.stop_requested.is_set():
                         break
-                    if stream is None:
-                        stream = sd.RawOutputStream(
-                            samplerate=chunk.sample_rate, channels=chunk.sample_channels,
-                            dtype="int16",
-                        )
-                        stream.start()
-                    if ttfa_ms is None:
-                        ttfa_ms = (time.monotonic() - start) * 1000
-                    stream.write(chunk.audio_int16_bytes)
-        finally:
-            if stream is not None:
-                stream.stop()
-                stream.close()
+                    work.put(("sentence", sentence))
+                    for chunk in self._synth_sentence(sentence, rate):
+                        if self.stop_requested.is_set():
+                            break
+                        work.put(("audio", chunk))
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+                failure.append(exc)
+            finally:
+                work.put(None)
 
-        return ttfa_ms, len(spoken), spoken
+        spoken: list[str] = []
 
-    def speak_stream(self, pieces: Iterable[str]) -> dict:
+        def _chunks() -> Iterator[np.ndarray]:
+            while True:
+                item = work.get()
+                if item is None:
+                    return
+                kind, value = item
+                if kind == "sentence":
+                    spoken.append(value)
+                else:
+                    yield value
+
+        producer = threading.Thread(target=_produce, name="tts-synth", daemon=True)
+        producer.start()
+
+        def _first_audio() -> None:
+            rt_log("TTS", "playing audio - first sound")
+            if on_first_audio is not None:
+                on_first_audio()
+
+        result = self.player.play(_chunks(), self.sample_rate, stop=self.stop_requested,
+                                  on_first_audio=_first_audio)
+        if result["first_audio_ms"] is not None:
+            rt_log("TTS", f"first sound after {result['first_audio_ms']:.0f}ms")
+        if failure and not self.stop_requested.is_set():
+            raise failure[0]
+        return result["first_audio_ms"], len(spoken), spoken
+
+    def speak_stream(self, pieces: Iterable[str], on_first_audio=None) -> dict:
         """Speaks text that is still being GENERATED, starting playback as soon as the first
         complete sentence exists rather than waiting for the generator to finish.
 
@@ -198,9 +398,23 @@ class LiveTTSSpeaker:
         """
         self.stop_requested.clear()
         spoken_parts: list[str] = []
+        rt_log("TTS", "started - streaming the answer as it generates")
+
+        if not RT.STREAMING_TTS:
+            # Opt-out for a setup where streaming misbehaves (a fussy audio device that clicks
+            # between synthesis calls, say). Costs exactly what streaming bought: the first word
+            # now waits for the LAST token instead of the first sentence. Nothing else changes -
+            # same return shape, same transcript, same stop_requested handling - so the caller
+            # cannot tell the difference except in the latency number it prints.
+            whole = "".join(p for p in pieces if p)
+            rt_log("TTS", "STREAMING_TTS=false - waiting for the whole answer before speaking")
+            result = self.speak(whole, on_first_audio=on_first_audio)
+            result["text"] = _sanitize_for_speech(whole)
+            return result
 
         def _sentences() -> Iterator[str]:
             buffer = ""
+            emitted = 0
             for piece in pieces:
                 if self.stop_requested.is_set():
                     return
@@ -208,11 +422,14 @@ class LiveTTSSpeaker:
                     continue
                 buffer += piece
                 while True:
-                    sentence, buffer = _pop_sentence(buffer, final=False)
+                    sentence, buffer = _pop_sentence(
+                        buffer, final=False, first=(emitted == 0)
+                    )
                     if sentence is None:
                         break
                     cleaned = _sanitize_for_speech(sentence)
                     if cleaned:
+                        emitted += 1
                         yield cleaned
             leftover, _ = _pop_sentence(buffer, final=True)
             if leftover:
@@ -225,15 +442,25 @@ class LiveTTSSpeaker:
                 spoken_parts.append(sentence)
                 yield sentence
 
-        ttfa_ms, num_segments, _ = self._play_sentences(_tracked())
+        ttfa_ms, num_segments, started = self._play_sentences(_tracked(), on_first_audio)
+        interrupted = self.stop_requested.is_set()
+        if interrupted:
+            rt_log("TTS", f"stopped early after {num_segments} fragment(s) - interrupted")
+        # Only what was actually SAID (sentences that started playing) - not everything the
+        # model generated ahead of the voice. The transcript and the conversation history both
+        # use this, and after an interruption the visitor never heard the rest (2026-10-27,
+        # found by the end-to-end test).
+        text = " ".join(started if interrupted else spoken_parts)
+        if interrupted and text:
+            text += " ..."
         return {
             "time_to_first_audio_ms": ttfa_ms or 0.0,
             "num_segments": num_segments,
-            "text": " ".join(spoken_parts),
-            "interrupted": self.stop_requested.is_set(),
+            "text": text,
+            "interrupted": interrupted,
         }
 
-    def speak(self, text: str) -> dict:
+    def speak(self, text: str, on_first_audio=None) -> dict:
         """Same measurement shape as the mock's TTSSpeaker.speak() - time_to_first_audio_ms and
         num_segments - but time_to_first_audio_ms here is measured against REAL audio actually
         reaching the speaker, not against a fully-materialized (and, for the mock, fake) list."""
@@ -243,7 +470,7 @@ class LiveTTSSpeaker:
             return {"time_to_first_audio_ms": 0.0, "num_segments": 0, "text": ""}
 
         self.stop_requested.clear()
-        ttfa_ms, num_segments, spoken = self._play_sentences(sentences)
+        ttfa_ms, num_segments, spoken = self._play_sentences(sentences, on_first_audio)
         return {
             "time_to_first_audio_ms": ttfa_ms or 0.0,
             "num_segments": num_segments,

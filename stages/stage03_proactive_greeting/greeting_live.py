@@ -40,8 +40,9 @@ for p in (STAGE01_DIR, STAGE02_DIR):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from ultralytics import YOLO  # noqa: E402
-
+# YOLO (ultralytics, which pulls in PyTorch) is imported only by this file's own demo below:
+# stage08 imports match_faces_to_people() from here, and the robot's default face-based presence
+# must not need PyTorch installed (2026-10-27).
 from presence_detector_live import (  # noqa: E402
     PerTrackPresenceTracker,
     detect_people,
@@ -172,6 +173,8 @@ if __name__ == "__main__":
     # Point at stage01's copy explicitly (reuses its already-downloaded weights, and downloads
     # there if missing) instead of a bare "yolov8n.pt", which depends on the current working
     # directory when this script is launched from the project root.
+    from ultralytics import YOLO
+
     yolo = YOLO(str(STAGE01_DIR / "yolov8n.pt"))
     embedder = SFaceEmbedder()
     store = FaceMemoryStore(is_match=embedder.is_match, score=embedder.similarity)

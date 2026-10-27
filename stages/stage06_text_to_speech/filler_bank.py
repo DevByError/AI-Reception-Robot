@@ -33,11 +33,8 @@ from __future__ import annotations
 import random
 import threading
 import time
-from pathlib import Path
 
 import numpy as np
-import sounddevice as sd
-from piper import PiperVoice
 
 # Kept SHORT and content-free on purpose.
 #
@@ -73,8 +70,15 @@ LOOKUP_FILLERS = (
 )
 
 
-# Everything quieter than this fraction of the clip's own peak counts as silence for trimming.
-# Relative rather than absolute so it works whatever level the voice renders at.
+# "I'm listening" sounds for when the visitor pauses mid-sentence (BACKCHANNELS). Played quieter
+# than speech, the way a person murmurs them. Only ever used with echo cancellation on - see
+# realtime_config.backchannels_wanted().
+BACKCHANNELS = (
+    "Mm-hm.",
+    "Mhm.",
+    "Okay.",
+)
+
 # Upper bound on how long any one filler may be, asserted by the self-test. Roughly the time a
 # streamed grounded answer takes to produce its first sentence, so the acknowledgment lands and
 # clears just as the real answer becomes available.
@@ -142,36 +146,66 @@ class FillerPlayback:
 _NULL_PLAYBACK = FillerPlayback(None, 0.0)
 
 
-class FillerBank:
-    """Renders a set of short phrases once, then plays them on demand with no synthesis cost."""
+class _PiperAdapter:
+    """Lets an old caller still pass a bare PiperVoice (the pre-2026-10-27 signature)."""
 
-    def __init__(self, voice: PiperVoice, phrases: tuple[str, ...] = DEFAULT_FILLERS,
-                 verbose: bool = True):
+    def __init__(self, voice):
+        import sounddevice as sd
+
+        self._voice, self._sd = voice, sd
+        self.sample_rate = int(voice.config.sample_rate)
+
+    def render(self, text: str) -> np.ndarray:
+        parts = [c.audio_int16_array for c in self._voice.synthesize(text)]
+        return np.concatenate(parts) if parts else np.zeros(0, dtype=np.int16)
+
+    def play_clip_async(self, pcm: np.ndarray) -> threading.Thread:
+        def _run() -> None:
+            try:
+                self._sd.play(pcm, self.sample_rate)
+                self._sd.wait()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[filler] playback failed ({exc!r}) - continuing to the real answer.")
+
+        thread = threading.Thread(target=_run, name="filler-playback", daemon=True)
+        thread.start()
+        return thread
+
+
+class FillerBank:
+    """Renders a set of short phrases once, then plays them on demand with no synthesis cost.
+
+    `speaker` is the robot's LiveTTSSpeaker, so the fillers use the same voice (Kokoro or
+    Piper), the same speaker device, and feed the echo canceller like everything else.
+    """
+
+    def __init__(self, speaker, phrases: tuple[str, ...] = DEFAULT_FILLERS,
+                 verbose: bool = True, volume: float = 1.0):
+        if not hasattr(speaker, "render"):
+            speaker = _PiperAdapter(speaker)
+        self.speaker = speaker
         self.phrases = tuple(phrases)
-        self._clips: list[tuple[bytes, int, int]] = []  # (pcm, sample_rate, channels)
+        self.sample_rate = int(speaker.sample_rate)
+        self._clips: list[np.ndarray] = []
         self._last_index: int | None = None
         self._lock = threading.Lock()
 
         started = time.monotonic()
         for phrase in self.phrases:
-            pcm = bytearray()
-            sample_rate = 22050
-            channels = 1
-            for chunk in voice.synthesize(phrase):
-                pcm += chunk.audio_int16_bytes
-                sample_rate = chunk.sample_rate
-                channels = chunk.sample_channels
-            self._clips.append((_trim_silence(bytes(pcm)), sample_rate, channels))
+            pcm = np.asarray(speaker.render(phrase), dtype=np.int16)
+            pcm = np.frombuffer(_trim_silence(pcm.tobytes(), self.sample_rate), dtype=np.int16)
+            if volume != 1.0:
+                pcm = (pcm.astype(np.float32) * volume).astype(np.int16)
+            self._clips.append(pcm)
 
         if verbose:
             elapsed_ms = (time.monotonic() - started) * 1000
             total_s = sum(self._clip_duration_s(i) for i in range(len(self._clips)))
-            print(f"[filler] pre-rendered {len(self._clips)} acknowledgment phrase(s) in "
-                  f"{elapsed_ms:.0f}ms ({total_s:.1f}s of audio, held in memory)")
+            print(f"[filler] pre-rendered {len(self._clips)} phrase(s) in {elapsed_ms:.0f}ms "
+                  f"({total_s:.1f}s of audio, held in memory)")
 
     def _clip_duration_s(self, index: int) -> float:
-        pcm, sample_rate, channels = self._clips[index]
-        return len(pcm) / (2 * max(channels, 1) * max(sample_rate, 1))  # 2 bytes per int16 sample
+        return self._clips[index].size / float(max(self.sample_rate, 1))
 
     def _pick_index(self) -> int:
         """Random, but never the phrase used last time - see rule 2 in the module docstring.
@@ -198,46 +232,20 @@ class FillerBank:
         """
         if not self._clips:
             return _NULL_PLAYBACK
-
         index = self._pick_index()
-        pcm, sample_rate, channels = self._clips[index]
-        duration_s = self._clip_duration_s(index)
-
-        def _play() -> None:
-            stream = None
-            try:
-                stream = sd.RawOutputStream(
-                    samplerate=sample_rate, channels=channels, dtype="int16"
-                )
-                stream.start()
-                stream.write(pcm)
-            except Exception as exc:  # noqa: BLE001 - see docstring
-                print(f"[filler] playback failed ({exc!r}) - continuing to the real answer.")
-            finally:
-                if stream is not None:
-                    try:
-                        stream.stop()
-                        stream.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-
-        thread = threading.Thread(target=_play, name="filler-playback", daemon=True)
-        thread.start()
-        return FillerPlayback(thread, duration_s)
+        try:
+            thread = self.speaker.play_clip_async(self._clips[index])
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            print(f"[filler] playback failed ({exc!r}) - continuing to the real answer.")
+            return _NULL_PLAYBACK
+        return FillerPlayback(thread, self._clip_duration_s(index))
 
 
 if __name__ == "__main__":
-    from tts_speaker_live import VOICE_MODEL, VOICE_NAME
+    from tts_speaker_live import LiveTTSSpeaker
 
-    if not Path(VOICE_MODEL).exists():
-        raise SystemExit(
-            f"Voice model not found at {VOICE_MODEL} - run "
-            f"'python -m piper.download_voices {VOICE_NAME}' in this folder first (see "
-            f"README.md)."
-        )
-
-    print(f"Loading Piper voice '{VOICE_NAME}'...")
-    bank = FillerBank(PiperVoice.load(str(VOICE_MODEL)))
+    print("Loading the voice...")
+    bank = FillerBank(LiveTTSSpeaker())
 
     print("\nPhrase lengths after silence-trimming:")
     longest = 0.0

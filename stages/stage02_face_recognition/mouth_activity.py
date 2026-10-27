@@ -56,6 +56,11 @@ UPPER_LIP_CENTER = 13
 LOWER_LIP_CENTER = 14
 LEFT_MOUTH_CORNER = 61
 RIGHT_MOUTH_CORNER = 291
+# For the head-turn estimate: the nose tip and the inner/outer corners of each eye (their
+# midpoints approximate the eye centres YuNet reports, so both yaw numbers share one scale).
+NOSE_TIP = 1
+RIGHT_EYE_CORNERS = (33, 133)
+LEFT_EYE_CORNERS = (362, 263)
 
 # How many recent frames of mouth-open ratio to keep per face when computing the movement score.
 # At a typical ~20-25 fps webcam this is roughly half a second - long enough to span several
@@ -95,6 +100,10 @@ class MouthActivity:
     activity_score: float            # rolling std-dev of the above - the real "is talking" signal
     is_speaking: bool
     samples: int                     # how many frames of history back this score (see below)
+    # Head turn, same scale as stage08's engagement.face_yaw(): 0 = looking at the camera,
+    # ~+/-0.5 at 45 degrees. None if the landmarks could not give one. Added 2026-10-27 so the
+    # addressee check can ask "were they FACING the robot while their lips moved?".
+    yaw: float | None = None
 
     @property
     def is_confident(self) -> bool:
@@ -152,6 +161,66 @@ class MouthActivityDetector:
         self.speaking_threshold = speaking_threshold
         self._tracked: list[_TrackedFace] = []
         self._next_id = 0
+        # Crop mode (added 2026-10-27) - see update_faces(). A separate single-face mesh in
+        # static mode, because each call sees a different crop.
+        self._crop_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=True, max_num_faces=1, refine_landmarks=True,
+            min_detection_confidence=0.5,
+        )
+        self._crop_history: dict[int, deque] = {}
+
+    # Crop mode: how much context to keep around a detected face box, and the smallest crop
+    # side handed to the mesh (it is upscaled to this if smaller).
+    CROP_EXPAND = 1.8
+    CROP_MIN_SIDE = 192
+
+    def update_faces(self, frame: np.ndarray,
+                     faces: list[tuple[int, tuple[int, int, int, int]]]) -> list[MouthActivity]:
+        """Mouth activity for faces that ANOTHER detector already found (added 2026-10-27).
+
+        faces: (track_id, (x, y, w, h)) pairs, e.g. from stage01's face_presence.py. Each face is
+        cropped (with margin) and the mesh runs on the crop.
+
+        Why: the whole-frame mesh (update()) uses MediaPipe's short-range detector, which works
+        on a downscaled frame and stops finding faces once they are smaller than ~1/5 of the
+        frame width. At 1280x720 that is anybody more than about a metre away - measured here, a
+        160px face in a 1280px frame was not found at all, while the same face cropped was found
+        down to 60px, in ~8ms per face. It also makes face_id the PRESENCE track id, so "who is
+        talking" no longer has to be joined back to a person by box geometry.
+        """
+        h, w = frame.shape[:2]
+        activities: list[MouthActivity] = []
+        seen: set[int] = set()
+        for track_id, (x, y, fw, fh) in faces:
+            side = max(fw, fh) * self.CROP_EXPAND
+            cx, cy = x + fw / 2.0, y + fh / 2.0
+            x0, y0 = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+            x1, y1 = int(min(w, cx + side / 2)), int(min(h, cy + side / 2))
+            crop = frame[y0:y1, x0:x1]
+            if crop.size == 0:
+                continue
+            ch, cw = crop.shape[:2]
+            if min(ch, cw) < self.CROP_MIN_SIDE:
+                factor = self.CROP_MIN_SIDE / float(min(ch, cw))
+                crop = cv2_resize(crop, (int(cw * factor), int(ch * factor)))
+            result = self._crop_mesh.process(np.ascontiguousarray(crop[:, :, ::-1]))
+            if not result.multi_face_landmarks:
+                continue
+            points = result.multi_face_landmarks[0].landmark
+            ratio = self._mouth_open_ratio(points)
+            history = self._crop_history.setdefault(
+                track_id, deque(maxlen=self.history_frames))
+            history.append(ratio)
+            seen.add(track_id)
+            score = statistics.pstdev(history) if len(history) >= 2 else 0.0
+            activities.append(MouthActivity(
+                face_id=track_id, bbox=(x, y, fw, fh), mouth_open_ratio=ratio,
+                activity_score=score, is_speaking=score >= self.speaking_threshold,
+                samples=len(history), yaw=self._yaw(points),
+            ))
+        for gone in set(self._crop_history) - {t for t, _ in faces}:
+            del self._crop_history[gone]
+        return activities
 
     def update(self, frame: np.ndarray) -> list[MouthActivity]:
         """Process one BGR camera frame (OpenCV's native format) and return the current mouth
@@ -190,6 +259,7 @@ class MouthActivityDetector:
                 activity_score=score,
                 is_speaking=score >= self.speaking_threshold,
                 samples=len(tracked.history),
+                yaw=self._yaw(points),
             ))
 
         # Drop faces that left the frame, so their stale mouth history can't be inherited by a
@@ -221,6 +291,20 @@ class MouthActivityDetector:
         if horizontal < 1e-6:  # face turned fully side-on - no meaningful width to divide by
             return 0.0
         return vertical / horizontal
+
+    @staticmethod
+    def _yaw(points) -> float | None:
+        try:
+            rx = (points[RIGHT_EYE_CORNERS[0]].x + points[RIGHT_EYE_CORNERS[1]].x) / 2
+            ry = (points[RIGHT_EYE_CORNERS[0]].y + points[RIGHT_EYE_CORNERS[1]].y) / 2
+            lx = (points[LEFT_EYE_CORNERS[0]].x + points[LEFT_EYE_CORNERS[1]].x) / 2
+            ly = (points[LEFT_EYE_CORNERS[0]].y + points[LEFT_EYE_CORNERS[1]].y) / 2
+            eye = ((lx - rx) ** 2 + (ly - ry) ** 2) ** 0.5
+            if eye < 1e-4:
+                return None
+            return (points[NOSE_TIP].x - (rx + lx) / 2) / eye
+        except (IndexError, AttributeError):
+            return None
 
     def _bbox_and_center(self, points, frame_w: int, frame_h: int):
         xs = [p.x for p in points]
@@ -258,6 +342,13 @@ class MouthActivityDetector:
 
     def close(self) -> None:
         self._face_mesh.close()
+        self._crop_mesh.close()
+
+
+def cv2_resize(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    import cv2
+
+    return cv2.resize(image, size, interpolation=cv2.INTER_LINEAR)
 
 
 def match_activity_to_bbox(

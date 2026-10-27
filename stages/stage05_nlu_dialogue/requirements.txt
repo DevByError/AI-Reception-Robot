@@ -43,3 +43,7 @@ anthropic==0.122.0
 # too so this stage's dependency list is honest on its own rather than relying on another
 # stage's install having happened first.
 requests==2.32.3
+
+# --- 2026-10-27: the same MiniLM model as ONNX, so PyTorch is not needed (knowledge_base.py) ------
+onnxruntime==1.23.2
+tokenizers==0.22.2

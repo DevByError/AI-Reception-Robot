@@ -287,10 +287,91 @@ class MockAnswerGenerator:
         return False, f"(mock general chat reply to: {question!r})"
 
 
+_GENERAL_HEADER_MAX_CHARS = 160  # a model that ignores the two-line format can't stall the answer
+
+
+def strip_general_header(pieces: Iterator[str], info: dict) -> Iterator[str]:
+    """Turns a streamed GENERAL_CLASSIFY_PROMPT reply into speakable answer text.
+
+    The reply is "UNIVERSITY_RELATED: yes|no" then "ANSWER: ...". The label line is a handful of
+    tokens, so it is held back, parsed into info["university_related"], and everything after
+    "ANSWER:" streams straight through. A model that ignores the format is spoken as-is once
+    _GENERAL_HEADER_MAX_CHARS have arrived without an ANSWER: marker. info["answered"] says
+    whether any answer text came out at all.
+    """
+    import re
+
+    info.setdefault("university_related", True)  # same fail-safe as _parse_university_related
+    info["answered"] = False
+    buffer = ""
+    header_done = False
+    for piece in pieces:
+        if header_done:
+            if piece:
+                info["answered"] = True
+                yield piece
+            continue
+        buffer += piece
+        related = re.search(r"UNIVERSITY_RELATED:\s*(yes|no)", buffer, re.IGNORECASE)
+        if related:
+            info["university_related"] = related.group(1).lower() == "yes"
+        marker = re.search(r"ANSWER:\s*", buffer, re.IGNORECASE)
+        if marker:
+            header_done = True
+            rest = buffer[marker.end():]
+            if rest.strip():
+                info["answered"] = True
+                yield rest
+        elif len(buffer) >= _GENERAL_HEADER_MAX_CHARS:
+            header_done = True
+            rest = re.sub(r"^\s*UNIVERSITY_RELATED:[^\n]*\n?", "", buffer, flags=re.IGNORECASE)
+            if rest.strip():
+                info["answered"] = True
+                yield rest
+    if not header_done:
+        rest = re.sub(r"^\s*UNIVERSITY_RELATED:[^\n]*\n?", "", buffer, flags=re.IGNORECASE)
+        rest = re.sub(r"^\s*ANSWER:\s*", "", rest, flags=re.IGNORECASE)
+        if rest.strip():
+            info["answered"] = True
+            yield rest
+
+
 class DialogueManager:
-    def __init__(self, kb: KnowledgeBase, answer_generator: AnswerGenerator):
+    def __init__(self, kb: KnowledgeBase, answer_generator: AnswerGenerator,
+                 stream_general: bool = True):
         self.kb = kb
         self.answer_generator = answer_generator
+        # Stream general (no knowledge-base match) answers too - added 2026-10-27. Before,
+        # those always waited for the model's complete reply, because of the two-line format;
+        # strip_general_header() now parses that format on the fly.
+        self.stream_general = stream_general
+        # (contextualized query, chunks) computed early from a partial transcript - see
+        # prefetch(). A plain attribute swap, so no lock is needed.
+        self._prefetched: tuple[str, list[KnowledgeChunk]] | None = None
+
+    @staticmethod
+    def _query_key(text: str) -> str:
+        import re
+
+        return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
+
+    def prefetch(self, question: str, history: list[tuple[str, str]] | None = None) -> None:
+        """Runs the knowledge-base search for a PARTIAL transcript while the visitor is still
+        talking, so it is already done when they stop. Used only when the final question turns
+        out to be the same words (the common case: the last partial and the final transcript
+        usually match). Never raises - this is an optimisation, not a step anything waits on."""
+        try:
+            query = _contextualize(question, history)
+            self._prefetched = (self._query_key(query), self.kb.search(query))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[dialogue] prefetch skipped ({exc!r}).")
+
+    def _search(self, question: str, history: list[tuple[str, str]] | None) -> list[KnowledgeChunk]:
+        query = _contextualize(question, history)
+        cached = self._prefetched
+        if cached is not None and cached[0] == self._query_key(query):
+            return cached[1]
+        return self.kb.search(query)
 
     def _answer_after_failed_grounded(
         self, question: str, chunks: list[KnowledgeChunk],
@@ -344,7 +425,8 @@ class DialogueManager:
                 pieces=iter([identity_answer]), is_streaming=False,
             )
 
-        chunks = self.kb.search(_contextualize(question, history))
+        chunks = self._search(question, history)
+        self._prefetched = None
         streamer = getattr(self.answer_generator, "stream_grounded_answer", None)
         # A generator may HAVE the method and still not be able to stream - ChainAnswerGenerator
         # defines it unconditionally but can only deliver if one of its backends does. Taking the
@@ -361,14 +443,40 @@ class DialogueManager:
                 is_streaming=True,
             )
 
+        general_streamer = getattr(self.answer_generator, "stream_general_answer", None)
+        if (not chunks and self.stream_general and general_streamer is not None
+                and getattr(self.answer_generator, "supports_general_streaming", True)):
+            result = StreamingDialogueResult(
+                intent=Intent.GENERAL_CHAT, used_chunks=[], pieces=iter(()), is_streaming=True,
+            )
+            result.pieces = self._stream_general(question, history, general_streamer, result)
+            return result
+
         # No streaming route applies - run the ordinary logic and hand the finished answer back
         # in the streaming shape. Deliberately re-running the whole of handle_question() rather
         # than reimplementing the remaining branches here: one router, one set of rules.
-        result = self.handle_question(question, history)
+        result = self.handle_question(question, history, _chunks=chunks)
         return StreamingDialogueResult(
             intent=result.intent, used_chunks=result.used_chunks,
             pieces=iter([result.answer]), is_streaming=False,
         )
+
+    def _stream_general(self, question: str, history, streamer, result):
+        """Streaming counterpart of handle_question()'s general branch. result.intent starts as
+        GENERAL_CHAT and is corrected to UNKNOWN once the label line says the question was about
+        the university - before anything is spoken, since the label comes first."""
+        info: dict = {}
+        try:
+            raw = streamer(_question_with_context(question, history))
+            for piece in strip_general_header(raw, info):
+                result.intent = Intent.UNKNOWN if info.get("university_related") else Intent.GENERAL_CHAT
+                yield piece
+        except Exception as exc:
+            print(f"[dialogue] streamed general answer failed ({exc!r}).")
+        if not info.get("answered"):
+            related = info.get("university_related", True)
+            result.intent = Intent.UNKNOWN if related else Intent.GENERAL_CHAT
+            yield FALLBACK_ANSWER if related else "Sorry, I'm not sure about that one."
 
     def _stream_grounded(self, question: str, chunks: list[KnowledgeChunk], streamer,
                          history: list[tuple[str, str]] | None = None):
@@ -415,7 +523,8 @@ class DialogueManager:
             print(f"[dialogue] streamed answer ended early ({exc!r}) - speaking what arrived.")
 
     def handle_question(
-        self, question: str, history: list[tuple[str, str]] | None = None
+        self, question: str, history: list[tuple[str, str]] | None = None,
+        _chunks: list[KnowledgeChunk] | None = None,
     ) -> DialogueResult:
         # Checked FIRST, before the knowledge base or any LLM call - these are fixed facts about
         # the robot itself (name, creator), not university content, and the explicit requirement
@@ -429,7 +538,8 @@ class DialogueManager:
             return DialogueResult(intent=Intent.IDENTITY, answer=identity_answer, used_chunks=[])
 
         # Follow-ups are searched with the previous question prepended - see _contextualize().
-        chunks = self.kb.search(_contextualize(question, history))
+        chunks = _chunks if _chunks is not None else self._search(question, history)
+        self._prefetched = None
         if chunks:
             # Fast path (added 2026-08-19): the best-matching chunk is already a finished,
             # spoken-ready sentence, so speak it as-is instead of paying a real 1-3 second LLM

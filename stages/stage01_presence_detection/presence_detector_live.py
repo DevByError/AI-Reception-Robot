@@ -19,10 +19,14 @@ from __future__ import annotations
 
 import time
 
+from typing import TYPE_CHECKING
+
 import cv2
-from ultralytics import YOLO
 
 from presence_detector import DetectedPerson
+
+if TYPE_CHECKING:  # imported lazily below: ultralytics pulls in PyTorch (~2GB), which the
+    from ultralytics import YOLO  # default face-based presence (face_presence.py) never needs
 
 PERSON_CLASS_ID = 0  # COCO class 0 = "person"
 CONFIDENCE_THRESHOLD = 0.5
@@ -82,7 +86,7 @@ INFERENCE_SIZE = 320  # downscale for inference - on CPU, a smaller frame means 
                        # returned scaled back to the original frame size automatically.
 
 
-def detect_people(model: YOLO, frame) -> list[DetectedPerson]:
+def detect_people(model: "YOLO", frame) -> list[DetectedPerson]:
     """Runs detection + tracking on one frame. Returns only people with a confirmed track id
     (the tracker needs a frame or two before it assigns one - that's normal)."""
     results = model.track(
@@ -124,6 +128,8 @@ def draw_boxes(frame, people: list[DetectedPerson]):
 
 
 if __name__ == "__main__":
+    from ultralytics import YOLO
+
     print("Loading YOLOv8n weights (first run downloads them automatically, ~6MB)...")
     model = YOLO("yolov8n.pt")
 
