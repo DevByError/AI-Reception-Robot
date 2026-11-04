@@ -18,7 +18,9 @@ import pytest
 audio_io = pytest.importorskip("audio_io")
 pytest.importorskip("livekit")
 
-SAMPLES = Path(__file__).resolve().parents[1] / "stages" / "stage04_speech_to_text" / "test_samples"
+# Synthetic speech clips (generated with the Kokoro voice), so the tests need no recordings of
+# real people.
+SAMPLES = Path(__file__).resolve().parent / "data" / "speech"
 
 
 def _load(name: str, rate: int = 16000) -> np.ndarray:

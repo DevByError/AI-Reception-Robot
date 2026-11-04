@@ -91,3 +91,6 @@ tests/data/face.jpg
 # which is explicitly un-ignored on the last line so the negation below can't swallow it.
 .env.*
 !.env.example
+
+# Voice recordings made with record_sample.py for evaluate_wer.py (personal data)
+stages/stage04_speech_to_text/test_samples/
