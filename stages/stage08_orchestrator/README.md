@@ -3,8 +3,8 @@
 Two files here:
 
 - `main.py` — the pure-Mock skeleton: every module (presence, face, STT, dialogue, TTS) is the
-  fake version from each stage. Proves the wiring/loop logic (detect → recognize → greet →
-  listen → understand → speak) works, with no hardware needed. Keep this working as a regression
+  fake version from each stage. Proves the wiring/loop logic (detect -> recognize -> greet ->
+  listen -> understand -> speak) works, with no hardware needed. Keep this working as a regression
   test of the orchestration logic itself.
 - `main_live.py` — the real version: every Mock swapped for its stage's real implementation. A
   real camera + real face recognition feed a real greeting, a real microphone question gets a
@@ -97,8 +97,8 @@ python stages\stage08_orchestrator\main_live.py --refresh
 python stages\stage08_orchestrator\main_live.py
 ```
 
-Walk into frame → the same presence/recognition/greeting flow as Stage 03's `greeting_live.py`
-(checking... while recognition gets a fair chance, then a personal or generic greeting) → once
+Walk into frame -> the same presence/recognition/greeting flow as Stage 03's `greeting_live.py`
+(checking... while recognition gets a fair chance, then a personal or generic greeting) -> once
 the state reaches `LISTENING`, the robot is genuinely listening on the microphone (same
 VAD/preroll logic as Stage 04's own live demo) for up to `LISTEN_TIMEOUT_S` (8s). Ask a real
 question — if the knowledge base has something relevant, you get a grounded answer; if not,
@@ -115,7 +115,7 @@ or speaks (see "Threading" below).
 
 With more than one person in frame, the robot picks whoever's **mouth is moving** as the person
 speaking to it, and outlines them in green with "talking to me" in the preview. This is
-`mouth_activity.py` in Stage 02 (mediapipe face mesh → lip landmarks → how much the mouth-open
+`mouth_activity.py` in Stage 02 (mediapipe face mesh -> lip landmarks -> how much the mouth-open
 ratio *varies* over the last ~half second; movement, not openness, is what separates talking from
 a resting face).
 

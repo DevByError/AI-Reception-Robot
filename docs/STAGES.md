@@ -33,22 +33,22 @@ last_seen, visit_count) plus the conversation transcripts from Stage 08. MySQL r
 originally-suggested SQLite because it's what's already installed and inspectable via Workbench
 here, and a kiosk deployment can point at a server; matching itself is still an in-memory scan,
 so no vector index (FAISS) is needed at this scale.
-**Test:** enroll a face with `face_memory_live.py`, quit, run it again → it recognizes you
+**Test:** enroll a face with `face_memory_live.py`, quit, run it again -> it recognizes you
 without asking, and `SELECT * FROM people` in Workbench shows the row.
 **Privacy note:** see `PRIVACY.md` — without explicit consent, no embedding is ever stored.
 
 ## Stage 03 — Proactive Greeting
-**Goal:** a simple state machine: `IDLE → DETECTED → GREETING → LISTENING`. For a group, one
+**Goal:** a simple state machine: `IDLE -> DETECTED -> GREETING -> LISTENING`. For a group, one
 shared group greeting. If a known face is in the group, add a personal touch to that same
 greeting.
-**Test:** simulate a person entering (mock event) → TTS is called automatically without any user
+**Test:** simulate a person entering (mock event) -> TTS is called automatically without any user
 command.
 
 ## Stage 04 — Listening (Speech-to-Text)
 **Goal:** after the greeting, record audio and convert it to text quickly, with Voice Activity
 Detection (knows when the person finished speaking) — English only in this first stage.
 **Suggested tech:** Whisper (local, streaming) or a cloud STT streaming service.
-**Test:** run a sample audio file → compare the resulting text against the expected text
+**Test:** run a sample audio file -> compare the resulting text against the expected text
 (acceptable WER).
 
 ## Stage 05 — Understanding & Dialogue (NLU + RAG)
@@ -58,8 +58,8 @@ strictly in the retrieved content. Deliberately no separate directions/wayfindin
 "where is X" question is answered straight from the knowledge base, floor-only (e.g. "the
 Engineering department is on the third floor"), no step-by-step route. A floor number is enough
 to save the student time, and a dedicated wayfinding stage wasn't worth the added surface area.
-**Test:** a set of sample test questions → correct intent classification + an answer containing
-the right information, and an out-of-scope question → the specific apology response, not a
+**Test:** a set of sample test questions -> correct intent classification + an answer containing
+the right information, and an out-of-scope question -> the specific apology response, not a
 hallucinated answer.
 **Not dependent on one LLM:** answer generation is a fallback chain — cloud (Gemini/Groq) first
 because it can search the live web, then a local Ollama model, then the retrieved chunk spoken
@@ -77,8 +77,8 @@ TTS).
 **Goal:** a periodically scheduled scraper that crawls public university pages, extracts
 structured data, diffs it against the previous snapshot, and automatically updates the knowledge
 base (embeddings) on any change — no manual work required.
-**Test:** run the crawler once manually → get structured JSON output; then modify a test page
-locally → confirm the diff is detected and the index is updated automatically on the next run.
+**Test:** run the crawler once manually -> get structured JSON output; then modify a test page
+locally -> confirm the diff is detected and the index is updated automatically on the next run.
 
 ## Stage 08 — Orchestrator
 **Goal:** tie all the stages together in one loop (event loop / state machine) that manages:
@@ -99,9 +99,9 @@ automatic recovery.
 ## Stage dependencies (build order)
 
 ```
-00 → 01 → 02 ┐
-             ├→ 03 → 04 → 05 → 06 → 08 → 09
-      07 ─────────────────↑ (feeds knowledge into 05, can run in parallel from the start)
+00 -> 01 -> 02 ┐
+             ├-> 03 -> 04 -> 05 -> 06 -> 08 -> 09
+      07 ─────────────────^ (feeds knowledge into 05, can run in parallel from the start)
 ```
 
 Stage 07 can be built in parallel with 01-06 since it's independent (a standalone crawler), but

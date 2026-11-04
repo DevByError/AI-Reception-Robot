@@ -186,8 +186,8 @@ far have only been "sounds a lot better" rather than an actual measured WER.
 If accuracy is still insufficient after the above, the right order of operations is:
 
 ```
-pretrained ASR → evaluate (evaluate_wer.py) → preprocessing (denoise on/off) →
-vocabulary/context (initial_prompt, vocabulary_correction) → evaluate again
+pretrained ASR -> evaluate (evaluate_wer.py) -> preprocessing (denoise on/off) ->
+vocabulary/context (initial_prompt, vocabulary_correction) -> evaluate again
 ```
 
 Only if it's *still* insufficient after that does fine-tuning become worth considering — and

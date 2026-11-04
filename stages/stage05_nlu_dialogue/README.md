@@ -386,7 +386,7 @@ lincoln.edu.my, not an automatic apology — see "Why a new intent" above.
   won't stay fast forever as Stage 07's scraper grows the corpus (documented TODO in
   `knowledge_base.py` to move to FAISS/Chroma/pgvector once that matters).
 - No dedicated NLU/entity extraction — every question goes through the same knowledge-base
-  search → grounded-or-general routing described above. That's a deliberate simplification (see
+  search -> grounded-or-general routing described above. That's a deliberate simplification (see
   "Why a new intent"), not a gap to fill later — there's no separate directions/wayfinding intent
   by design, since a floor number is all the project wants the robot to give out.
 - The `UNIVERSITY_RELATED: yes/no` classification is a single LLM call parsing a specific text

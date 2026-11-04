@@ -16,10 +16,10 @@ stopping the service).
 
 ## 2) Graceful degradation
 Every module must fail safely without taking down the whole robot:
-- STT didn't understand? → "Sorry, could you repeat that?" instead of crashing the program.
-- Camera disconnected temporarily? → go back to IDLE, retry the camera connection every few
+- STT didn't understand? -> "Sorry, could you repeat that?" instead of crashing the program.
+- Camera disconnected temporarily? -> go back to IDLE, retry the camera connection every few
   seconds.
-- Cloud LLM/TTS service slow or down? → a pre-written local fallback answer.
+- Cloud LLM/TTS service slow or down? -> a pre-written local fallback answer.
 
 ## 3) Stress testing
 Run `stage08_orchestrator/main.py` in a loop calling `run_visit()` dozens of times back-to-back

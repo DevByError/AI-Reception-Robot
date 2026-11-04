@@ -3,7 +3,7 @@
 Two files here:
 
 - `greeting_state_machine.py` — the mock-based version, keep this working as a regression test
-  of the IDLE → DETECTED → GREETING → LISTENING logic (solo/known/group cases). No hardware
+  of the IDLE -> DETECTED -> GREETING -> LISTENING logic (solo/known/group cases). No hardware
   needed.
 - `greeting_live.py` — the real version: wires Stage 01's live YOLOv8n person tracking and
   Stage 02's live YuNet+SFace face recognition into the same state machine, and speaks the
@@ -35,7 +35,7 @@ box while it spends up to `RECOGNITION_WAIT_S` (2.5s) trying to actually recogni
 first (several recognition ticks, a bit of natural head movement helps, same idea as Stage 02's
 enrollment/observation windows). Only after that — either a confident match, or the wait running
 out — does it actually greet you and the console shows the state changing
-`DETECTED → GREETING → LISTENING`. Since you're not in the face memory store yet on a first run,
+`DETECTED -> GREETING -> LISTENING`. Since you're not in the face memory store yet on a first run,
 that first greeting is generic ("Hi there!..."). After `LISTENING_TIMEOUT_S` (6s — a temporary
 stand-in for the real "conversation is over" signal that will come from Stage 04/05), it
 returns to `IDLE`.

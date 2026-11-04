@@ -13,7 +13,7 @@ the background university data update flow.
 | Greeting State Machine | Decides when to proactively greet and with what phrasing | Stage 03 |
 | STT Listener | Converts heard speech to text (streaming + VAD) | Stage 04 |
 | Dialogue Manager (NLU+RAG+LLM) | Understands intent, answers from the knowledge base or apologizes | Stage 05 |
-| Answer Backend Chain | Cloud LLM → local LLM (Ollama) → knowledge-base text, so one backend failing costs a retry rather than a wrong answer | Stage 05 (`dialogue_manager_live.py`) |
+| Answer Backend Chain | Cloud LLM -> local LLM (Ollama) -> knowledge-base text, so one backend failing costs a retry rather than a wrong answer | Stage 05 (`dialogue_manager_live.py`) |
 | Knowledge Base (Vector Store) | Stores university data text/chunks as embeddings for search | Stage 05 |
 | TTS Speaker | Converts the answer text to audible speech | Stage 06 |
 | Expression Layer (Face) | Shows the robot's state (animated screen face or physical head) | Overlaps 03/06 |
@@ -164,7 +164,7 @@ rule). See `robot_db.connect_or_none()`.
 The following **is not extracted from the public website** because it usually either isn't
 published there or requires high accuracy:
 
-- Which floor each department/service is on → university websites rarely publish an accurate
+- Which floor each department/service is on -> university websites rarely publish an accurate
   internal floor directory, so this is curated by hand as ordinary Knowledge Base chunks (Stage
   05's `SAMPLE_CHUNKS`, eventually merged with whatever Stage 07's scraper can find), not a
   separate stage or file. Deliberately floor-only, no rooms/elevators/step-by-step routes - see
