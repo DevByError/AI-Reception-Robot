@@ -58,15 +58,16 @@ measured per embedding model and is meaningless across models, which is why
 SIMILARITY_THRESHOLDS is a table rather than one number: 0.35 was measured for MiniLM and says
 nothing about where nomic-embed-text's relevant/irrelevant score clusters actually fall.
 
-TODO (real implementation later):
-  - replace storage with FAISS/Chroma/pgvector once the corpus is large enough that brute-force
-    cosine similarity over every chunk (fine for the current few dozen facts) stops being fast
-    enough - Stage 07's scraper will grow this corpus over time.
+Search is brute-force cosine similarity over every chunk. That is fast enough for the current
+corpus; a vector index (FAISS, Chroma, pgvector) would be the next step if it grows a lot.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+
+log = logging.getLogger(__name__)
 
 # Must be set BEFORE numpy/torch/sentence-transformers are imported below - works around a real
 # crash hit on Windows (2026-08-17, exit code -1073740791 = 0xC0000409
@@ -155,10 +156,12 @@ def threshold_for(model_name: str) -> float:
         return SIMILARITY_THRESHOLDS[model_name]
     if model_name not in _warned_about_threshold:
         _warned_about_threshold.add(model_name)
-        print(f"[kb] no measured SIMILARITY_THRESHOLD for embedding model {model_name!r} - "
-              f"using {UNMEASURED_THRESHOLD_FALLBACK} as a placeholder. Run "
-              f"evaluate_retrieval.py and add the measured value to SIMILARITY_THRESHOLDS in "
-              f"knowledge_base.py before trusting this in a live conversation.")
+        log.info(
+            f"[kb] no measured SIMILARITY_THRESHOLD for embedding model {model_name!r} - "
+            f"using {UNMEASURED_THRESHOLD_FALLBACK} as a placeholder. Run "
+            f"evaluate_retrieval.py and add the measured value to SIMILARITY_THRESHOLDS in "
+            f"knowledge_base.py before trusting this in a live conversation."
+        )
     return UNMEASURED_THRESHOLD_FALLBACK
 
 
@@ -181,9 +184,9 @@ def _duration(seconds: float) -> str:
     return f"{seconds / 3600:.1f} hours"
 
 
-def _normalize(matrix: "np.ndarray") -> "np.ndarray":
+def _normalize(matrix: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(matrix, axis=-1, keepdims=True)
-    return matrix / np.maximum(norms, 1e-12)   # guard against a zero vector, not expected
+    return matrix / np.maximum(norms, 1e-12)  # guard against a zero vector, not expected
 
 
 class SentenceTransformerBackend:
@@ -197,19 +200,19 @@ class SentenceTransformerBackend:
                 "sentence-transformers is required for the default embedding backend - run: "
                 "pip install -r stages/stage05_nlu_dialogue/requirements.txt"
             ) from exc
-        print(f"Loading embedding model '{model_name}' (one-time download on first run)...")
+        log.info(f"Loading embedding model '{model_name}' (one-time download on first run)...")
         self._model = SentenceTransformer(model_name)
         # No prefix and no "ollama:" qualifier - keeping this string exactly as it was means
         # caches written before the backend split still load instead of triggering a full
         # rescrape-and-re-embed.
         self.name = model_name
 
-    def encode_documents(self, texts: list[str], batch_size: int = 256) -> "np.ndarray":
+    def encode_documents(self, texts: list[str], batch_size: int = 256) -> np.ndarray:
         return self._model.encode(
             texts, normalize_embeddings=True, batch_size=batch_size, show_progress_bar=False
         )
 
-    def encode_query(self, text: str) -> "np.ndarray":
+    def encode_query(self, text: str) -> np.ndarray:
         return self._model.encode(text, normalize_embeddings=True)
 
 
@@ -257,9 +260,9 @@ class OnnxMiniLMBackend:
         )
         self._input_names = {i.name for i in self._session.get_inputs()}
         self.name = EMBEDDING_MODEL_NAME
-        print(f"Using ONNX embeddings: {self.name} (no PyTorch)")
+        log.info(f"Using ONNX embeddings: {self.name} (no PyTorch)")
 
-    def _encode(self, texts: list[str]) -> "np.ndarray":
+    def _encode(self, texts: list[str]) -> np.ndarray:
         encoded = self._tokenizer.encode_batch(texts)
         ids = np.array([e.ids for e in encoded], dtype=np.int64)
         mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
@@ -271,13 +274,13 @@ class OnnxMiniLMBackend:
         pooled = summed / np.maximum(mask.sum(axis=1, keepdims=True), 1e-9)
         return _normalize(pooled).astype(np.float32)
 
-    def encode_documents(self, texts: list[str], batch_size: int = 64) -> "np.ndarray":
+    def encode_documents(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
         if not texts:
             return np.zeros((0, 384), dtype=np.float32)
-        parts = [self._encode(texts[i:i + batch_size]) for i in range(0, len(texts), batch_size)]
+        parts = [self._encode(texts[i : i + batch_size]) for i in range(0, len(texts), batch_size)]
         return np.vstack(parts)
 
-    def encode_query(self, text: str) -> "np.ndarray":
+    def encode_query(self, text: str) -> np.ndarray:
         return self._encode([text])[0]
 
 
@@ -308,7 +311,7 @@ class OllamaEmbeddingBackend:
         # Qualified so an Ollama-built cache can never be mistaken for a sentence-transformers
         # one, even if both ever used the same underlying model name.
         self.name = f"ollama:{self._model}"
-        print(f"Using Ollama embeddings: {self.name}")
+        log.info(f"Using Ollama embeddings: {self.name}")
 
     # Hard cap on how many texts go into ONE /api/embed request, regardless of what the caller
     # asks for. Found the hard way: upsert_many()'s batch_size defaults to 256 -
@@ -341,37 +344,41 @@ class OllamaEmbeddingBackend:
     # is not what the scraper produces. Short strings are genuinely that fast; real ones are not.)
     LARGE_CORPUS_WARN = 500
 
-    def encode_documents(self, texts: list[str], batch_size: int = MAX_EMBED_BATCH
-                         ) -> "np.ndarray":
+    def encode_documents(self, texts: list[str], batch_size: int = MAX_EMBED_BATCH) -> np.ndarray:
         batch_size = max(1, min(batch_size, self.MAX_EMBED_BATCH))
         show_progress = len(texts) > batch_size
 
         if len(texts) >= self.LARGE_CORPUS_WARN:
             # Rough order-of-magnitude estimate from the per-chunk rates in the comment above;
             # the live progress line below reports the real ETA once it has actual timings.
-            print(f"[kb] embedding {len(texts)} chunks through Ollama - roughly "
-                  f"{_duration(len(texts) * 0.43)} on this hardware, against about "
-                  f"{_duration(len(texts) * 0.012)} for the in-process sentence-transformers "
-                  f"backend. Unset LUC_EMBEDDING_BACKEND to switch back; see "
-                  f"stages/stage05_nlu_dialogue/README.md for the tradeoff.")
+            log.info(
+                f"[kb] embedding {len(texts)} chunks through Ollama - roughly "
+                f"{_duration(len(texts) * 0.43)} on this hardware, against about "
+                f"{_duration(len(texts) * 0.012)} for the in-process sentence-transformers "
+                f"backend. Unset LUC_EMBEDDING_BACKEND to switch back; see "
+                f"stages/stage05_nlu_dialogue/README.md for the tradeoff."
+            )
 
         started = time.monotonic()
         vectors: list[list[float]] = []
         for start in range(0, len(texts), batch_size):
-            batch = texts[start:start + batch_size]
+            batch = texts[start : start + batch_size]
             vectors.extend(self._client.embed(batch, is_query=False, model=self._model))
             if show_progress:
                 done = min(start + batch_size, len(texts))
                 elapsed = time.monotonic() - started
                 remaining = (elapsed / done) * (len(texts) - done)
-                print(f"\r[kb] embedding via Ollama: {done}/{len(texts)} "
-                      f"({elapsed / 60:.1f} min elapsed, ~{remaining / 60:.1f} min left)   ",
-                      end="", flush=True)
+                print(
+                    f"\r[kb] embedding via Ollama: {done}/{len(texts)} "
+                    f"({elapsed / 60:.1f} min elapsed, ~{remaining / 60:.1f} min left)   ",
+                    end="",
+                    flush=True,
+                )
         if show_progress:
             print()
         return _normalize(np.asarray(vectors, dtype="float32"))
 
-    def encode_query(self, text: str) -> "np.ndarray":
+    def encode_query(self, text: str) -> np.ndarray:
         vector = self._client.embed([text], is_query=True, model=self._model)[0]
         return _normalize(np.asarray(vector, dtype="float32"))
 
@@ -387,16 +394,16 @@ def build_embedding_backend(backend: str | None = None):
             return OnnxMiniLMBackend()
         except Exception as exc:
             if backend == "onnx":
-                print(f"[kb] {exc}\n[kb] falling back to the sentence-transformers backend.")
+                log.info(f"[kb] {exc}\n[kb] falling back to the sentence-transformers backend.")
             return SentenceTransformerBackend()
     if backend == "ollama":
         try:
             return OllamaEmbeddingBackend()
         except Exception as exc:
-            print(f"[kb] {exc}\n[kb] falling back to the sentence-transformers backend.")
+            log.info(f"[kb] {exc}\n[kb] falling back to the sentence-transformers backend.")
             return SentenceTransformerBackend()
     if backend != "sentence-transformers":
-        print(f"[kb] unknown LUC_EMBEDDING_BACKEND={backend!r} - using sentence-transformers.")
+        log.info(f"[kb] unknown LUC_EMBEDDING_BACKEND={backend!r} - using sentence-transformers.")
     return SentenceTransformerBackend()
 
 
@@ -448,7 +455,7 @@ class KnowledgeBase:
         self._backend = backend or build_embedding_backend()
         self._model_name = self._backend.name  # stamped into save()'s metadata - see load()
         self._chunks: dict[str, KnowledgeChunk] = {}
-        self._embeddings: dict[str, "np.ndarray"] = {}  # chunk_id -> unit-normalized embedding
+        self._embeddings: dict[str, np.ndarray] = {}  # chunk_id -> unit-normalized embedding
 
     @property
     def embedding_model(self) -> str:
@@ -537,7 +544,7 @@ class KnowledgeBase:
             # result for the whole KB_CACHE_MAX_AGE_S window - turning one bad network moment
             # into a robot that answers nothing for a day. Failing to cache just means the next
             # run scrapes again, which is exactly what should happen.
-            print("[kb] nothing to cache (0 chunks) - not writing a cache file.")
+            log.info("[kb] nothing to cache (0 chunks) - not writing a cache file.")
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         matrix = np.vstack([self._embeddings[cid] for cid in chunk_ids])
@@ -565,39 +572,47 @@ class KnowledgeBase:
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             if meta.get("embedding_model") != self._model_name:
-                print(f"[kb] cache was built with '{meta.get('embedding_model')}', now using "
-                      f"'{self._model_name}' - ignoring it and rebuilding.")
+                log.info(
+                    f"[kb] cache was built with '{meta.get('embedding_model')}', now using "
+                    f"'{self._model_name}' - ignoring it and rebuilding."
+                )
                 return False
             age_s = time.time() - float(meta.get("saved_at", 0))
             if max_age_s is not None and age_s > max_age_s:
-                print(f"[kb] cache is {age_s / 3600:.1f}h old (limit {max_age_s / 3600:.1f}h) - "
-                      f"refreshing from the website instead.")
+                log.info(
+                    f"[kb] cache is {age_s / 3600:.1f}h old (limit {max_age_s / 3600:.1f}h) - "
+                    f"refreshing from the website instead."
+                )
                 return False
 
             matrix = np.load(path)["embeddings"]
             chunk_dicts = meta["chunks"]
             if len(chunk_dicts) != len(matrix):
-                print("[kb] cache metadata and embeddings disagree on length - ignoring it.")
+                log.info("[kb] cache metadata and embeddings disagree on length - ignoring it.")
                 return False
             if not chunk_dicts:
                 # Belt-and-braces against the empty-cache trap save() now refuses to create -
                 # an older or hand-made empty cache file would otherwise "load successfully"
                 # with zero chunks and suppress the rescrape that would fix it.
-                print("[kb] cache is empty - rebuilding from source instead.")
+                log.info("[kb] cache is empty - rebuilding from source instead.")
                 return False
 
             for chunk_dict, vector in zip(chunk_dicts, matrix):
                 chunk = KnowledgeChunk(**chunk_dict)
                 self._chunks[chunk.chunk_id] = chunk
                 self._embeddings[chunk.chunk_id] = vector
-            print(f"[kb] loaded {len(chunk_dicts)} cached chunk(s) from disk "
-                  f"({age_s / 3600:.1f}h old) - skipping the website scrape.")
+            log.warning(
+                f"[kb] loaded {len(chunk_dicts)} cached chunk(s) from disk "
+                f"({age_s / 3600:.1f}h old) - skipping the website scrape."
+            )
             return True
         except Exception as exc:
-            print(f"[kb] could not read the cache ({exc!r}) - rebuilding from source instead.")
+            log.warning(
+                f"[kb] could not read the cache ({exc!r}) - rebuilding from source instead."
+            )
             return False
 
-    def _embed(self, text: str) -> "np.ndarray":
+    def _embed(self, text: str) -> np.ndarray:
         """One QUERY embedding. Backends return unit vectors, so the plain dot product in
         score_all() below IS the cosine similarity - cheaper than re-normalizing per search.
 
@@ -664,32 +679,41 @@ def _check(label: str, passed: bool) -> bool:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     kb = KnowledgeBase()
     print(f"Embedding model: {kb.embedding_model} (threshold {kb.similarity_threshold})")
-    kb.upsert(KnowledgeChunk(
-        chunk_id="dept-cs",
-        text="The Computer Science department is located on the 4th floor.",
-        source_url="https://university.example.edu/departments/cs",
-        last_updated=0.0,
-    ))
-    kb.upsert(KnowledgeChunk(
-        chunk_id="mosque-men",
-        text="The men's mosque is on the first floor.",
-        source_url="https://university.example.edu/campus/mosque-men",
-        last_updated=0.0,
-    ))
-    kb.upsert(KnowledgeChunk(
-        chunk_id="mosque-women",
-        text="The women's mosque is on the second floor.",
-        source_url="https://university.example.edu/campus/mosque-women",
-        last_updated=0.0,
-    ))
-    kb.upsert(KnowledgeChunk(
-        chunk_id="event-orientation",
-        text="Freshman orientation event starts next Monday at the main auditorium.",
-        source_url="https://university.example.edu/events",
-        last_updated=0.0,
-    ))
+    kb.upsert(
+        KnowledgeChunk(
+            chunk_id="dept-cs",
+            text="The Computer Science department is located on the 4th floor.",
+            source_url="https://university.example.edu/departments/cs",
+            last_updated=0.0,
+        )
+    )
+    kb.upsert(
+        KnowledgeChunk(
+            chunk_id="mosque-men",
+            text="The men's mosque is on the first floor.",
+            source_url="https://university.example.edu/campus/mosque-men",
+            last_updated=0.0,
+        )
+    )
+    kb.upsert(
+        KnowledgeChunk(
+            chunk_id="mosque-women",
+            text="The women's mosque is on the second floor.",
+            source_url="https://university.example.edu/campus/mosque-women",
+            last_updated=0.0,
+        )
+    )
+    kb.upsert(
+        KnowledgeChunk(
+            chunk_id="event-orientation",
+            text="Freshman orientation event starts next Monday at the main auditorium.",
+            source_url="https://university.example.edu/events",
+            last_updated=0.0,
+        )
+    )
 
     results = kb.search("where is the computer science department")
     print("\nSearch results for 'where is the computer science department':")
@@ -727,14 +751,16 @@ if __name__ == "__main__":
 
     with tempfile.TemporaryDirectory() as tmp:
         cache_path = Path(tmp) / "kb_cache.npz"
-        kb.upsert(KnowledgeChunk(
-            chunk_id="flagged-example",
-            text="The Engineering department is on the third floor.",
-            source_url="facilities-directory:engineering",
-            last_updated=123.0,
-            boost=0.15,
-            is_direct_answer=True,
-        ))
+        kb.upsert(
+            KnowledgeChunk(
+                chunk_id="flagged-example",
+                text="The Engineering department is on the third floor.",
+                source_url="facilities-directory:engineering",
+                last_updated=123.0,
+                boost=0.15,
+                is_direct_answer=True,
+            )
+        )
         kb.save(cache_path)
 
         # Reuses the same backend object - a fresh KnowledgeBase() would reload the model
@@ -744,9 +770,7 @@ if __name__ == "__main__":
         reloaded = KnowledgeBase(backend=kb._backend)
         loaded_ok = reloaded.load(cache_path)
         all_ok &= _check("cache reports a successful load", loaded_ok)
-        all_ok &= _check(
-            "every chunk survived the round trip", len(reloaded) == len(kb)
-        )
+        all_ok &= _check("every chunk survived the round trip", len(reloaded) == len(kb))
 
         original = kb._chunks["flagged-example"]
         restored = reloaded._chunks.get("flagged-example")

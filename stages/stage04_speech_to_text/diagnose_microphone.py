@@ -34,7 +34,6 @@ import time
 import numpy as np
 import sounddevice as sd
 import webrtcvad
-
 from stt_listener_live import FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, VAD_AGGRESSIVENESS
 
 # Peak amplitude (of int16's 32768) below which a device is treated as producing nothing at all.
@@ -50,7 +49,7 @@ HOT_PEAK = 26000
 
 def _record(seconds: float, device=None) -> bytes:
     """Captures raw 16-bit mono PCM at SAMPLE_RATE, the same way the robot does."""
-    q: "queue.Queue[bytes]" = queue.Queue()
+    q: queue.Queue[bytes] = queue.Queue()
 
     def _cb(indata, frames, time_info, status):
         if status:
@@ -58,8 +57,12 @@ def _record(seconds: float, device=None) -> bytes:
         q.put(bytes(indata))
 
     stream = sd.RawInputStream(
-        samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES * 3, dtype="int16", channels=1,
-        device=device, callback=_cb,
+        samplerate=SAMPLE_RATE,
+        blocksize=FRAME_SAMPLES * 3,
+        dtype="int16",
+        channels=1,
+        device=device,
+        callback=_cb,
     )
     with stream:
         time.sleep(seconds)
@@ -71,14 +74,14 @@ def _record(seconds: float, device=None) -> bytes:
 
 def _frames(raw: bytes) -> list[bytes]:
     step = FRAME_SAMPLES * 2  # int16
-    return [raw[i:i + step] for i in range(0, len(raw) - step + 1, step)]
+    return [raw[i : i + step] for i in range(0, len(raw) - step + 1, step)]
 
 
 def _stats(raw: bytes) -> tuple[float, float]:
     a = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
     if a.size == 0:
         return 0.0, 0.0
-    return float(np.sqrt((a ** 2).mean())), float(np.abs(a).max())
+    return float(np.sqrt((a**2).mean())), float(np.abs(a).max())
 
 
 def list_devices() -> None:
@@ -94,19 +97,25 @@ def list_devices() -> None:
         # The name can contain characters the Windows console cannot encode; it is not worth
         # crashing a diagnostic over, so replace anything unprintable.
         name = d["name"].encode("ascii", "replace").decode("ascii").replace("\n", " ")
-        print(f"  {i:3d} [{apis[d['hostapi']]:<20}] {int(d['default_samplerate']):>6}Hz  "
-              f"{name[:44]}{mark}")
+        print(
+            f"  {i:3d} [{apis[d['hostapi']]:<20}] {int(d['default_samplerate']):>6}Hz  "
+            f"{name[:44]}{mark}"
+        )
         if i == default_in and d["default_samplerate"] < SAMPLE_RATE:
-            print(f"        ^ BELOW {SAMPLE_RATE}Hz - almost certainly a Bluetooth headset's "
-                  f"hands-free profile.\n          Whisper transcribes that badly. Pick another "
-                  f"input in Windows sound settings.")
+            print(
+                f"        ^ BELOW {SAMPLE_RATE}Hz - almost certainly a Bluetooth headset's "
+                f"hands-free profile.\n          Whisper transcribes that badly. Pick another "
+                f"input in Windows sound settings."
+            )
 
 
 def check_signal(seconds: float) -> tuple[bytes, float, float]:
     print()
     print("=" * 78)
-    print(f"2-3. Signal and level  ({seconds:.0f}s - say something, normally, from where you "
-          f"stand)")
+    print(
+        f"2-3. Signal and level  ({seconds:.0f}s - say something, normally, from where you "
+        f"stand)"
+    )
     print("=" * 78)
     raw = _record(seconds)
     rms, peak = _stats(raw)
@@ -115,7 +124,7 @@ def check_signal(seconds: float) -> tuple[bytes, float, float]:
     # "it only picked up the second half of what I said".
     step = int(SAMPLE_RATE * 0.5) * 2
     for i in range(0, max(len(raw) - step + 1, 0), step):
-        _, chunk_peak = _stats(raw[i:i + step])
+        _, chunk_peak = _stats(raw[i : i + step])
         bars = int(min(chunk_peak / 32768 * 50, 50))
         print(f"  {i / 2 / SAMPLE_RATE:4.1f}s |{'#' * bars:<50}| {chunk_peak:6.0f}")
 
@@ -132,16 +141,22 @@ def check_vad(raw: bytes) -> int:
     frames = _frames(raw)
     flags = [vad.is_speech(f, SAMPLE_RATE) for f in frames]
     speech = sum(flags)
-    print(f"  {speech}/{len(frames)} frames of {FRAME_MS}ms flagged as speech "
-          f"(aggressiveness {VAD_AGGRESSIVENESS})")
+    print(
+        f"  {speech}/{len(frames)} frames of {FRAME_MS}ms flagged as speech "
+        f"(aggressiveness {VAD_AGGRESSIVENESS})"
+    )
     if frames:
         per_frame = np.array([_stats(f)[0] for f in frames])
-        print(f"  per-frame rms: p10={np.percentile(per_frame, 10):.0f} "
-              f"median={np.median(per_frame):.0f} p90={np.percentile(per_frame, 90):.0f}")
+        print(
+            f"  per-frame rms: p10={np.percentile(per_frame, 10):.0f} "
+            f"median={np.median(per_frame):.0f} p90={np.percentile(per_frame, 90):.0f}"
+        )
         if speech == len(frames):
-            print("  ^ EVERY frame reads as speech. Either the room is genuinely noisy or the\n"
-                  "    input level is too high - the robot will start recording immediately and\n"
-                  "    struggle to tell when you have finished talking.")
+            print(
+                "  ^ EVERY frame reads as speech. Either the room is genuinely noisy or the\n"
+                "    input level is too high - the robot will start recording immediately and\n"
+                "    struggle to tell when you have finished talking."
+            )
         elif speech == 0:
             print("  ^ NO frame reads as speech. Nothing will ever start a recording.")
     return speech
@@ -153,10 +168,15 @@ def check_whisper(raw: bytes) -> str | None:
     print("5. Transcription")
     print("=" * 78)
     from stt_listener_live import (
-        WhisperSTTEngine, real_hotwords, real_initial_prompt, real_vocabulary,
+        WhisperSTTEngine,
+        real_hotwords,
+        real_initial_prompt,
+        real_vocabulary,
     )
+
     engine = WhisperSTTEngine(
-        initial_prompt=real_initial_prompt(), vocabulary=real_vocabulary(),
+        initial_prompt=real_initial_prompt(),
+        vocabulary=real_vocabulary(),
         hotwords=real_hotwords(),
     )
     chunks = engine.transcribe_stream([raw], "en-US")
@@ -164,8 +184,10 @@ def check_whisper(raw: bytes) -> str | None:
     report = engine.last_confidence
     print(f'  transcript: "{text}"')
     if report is not None:
-        print(f"  confidence: {report.low_confidence_word_count}/{report.total_word_count} "
-              f"words uncertain, reliable={report.is_reliable}")
+        print(
+            f"  confidence: {report.low_confidence_word_count}/{report.total_word_count} "
+            f"words uncertain, reliable={report.is_reliable}"
+        )
     return text
 
 
@@ -176,29 +198,39 @@ def verdict(rms: float, peak: float, speech_frames: int, text: str | None) -> No
     print("=" * 78)
 
     if peak < SILENT_PEAK:
-        print("  THE MICROPHONE IS DELIVERING SILENCE. Nothing downstream can work, and nothing\n"
-              "  reports an error - the stream opens fine and every sample is zero.\n")
-        print("  Almost always one of these, in this order of likelihood:\n"
-              "    1. The microphone is MUTED in Windows. Right-click the speaker icon ->\n"
-              "       Sound settings -> Input -> your microphone -> make sure it is not muted\n"
-              "       and the volume is around 50-75%.\n"
-              "    2. A hardware mic-mute key is on. Many laptops have one on F4/F8, sometimes\n"
-              "       with its own LED.\n"
-              "    3. Microphone access is blocked: Settings -> Privacy & security ->\n"
-              "       Microphone -> 'Let desktop apps access your microphone'.\n"
-              "    4. Another application has the device open exclusively.")
+        print(
+            "  THE MICROPHONE IS DELIVERING SILENCE. Nothing downstream can work, and nothing\n"
+            "  reports an error - the stream opens fine and every sample is zero.\n"
+        )
+        print(
+            "  Almost always one of these, in this order of likelihood:\n"
+            "    1. The microphone is MUTED in Windows. Right-click the speaker icon ->\n"
+            "       Sound settings -> Input -> your microphone -> make sure it is not muted\n"
+            "       and the volume is around 50-75%.\n"
+            "    2. A hardware mic-mute key is on. Many laptops have one on F4/F8, sometimes\n"
+            "       with its own LED.\n"
+            "    3. Microphone access is blocked: Settings -> Privacy & security ->\n"
+            "       Microphone -> 'Let desktop apps access your microphone'.\n"
+            "    4. Another application has the device open exclusively."
+        )
         return
 
     if peak >= CLIPPING_PEAK:
-        print(f"  THE INPUT IS CLIPPING (peak {peak:.0f}, full scale 32768). Loud parts of your\n"
-              f"  speech are being squared off, which transcribes about as badly as being too\n"
-              f"  quiet. Turn the input volume DOWN in Windows sound settings - try 50%.")
+        print(
+            f"  THE INPUT IS CLIPPING (peak {peak:.0f}, full scale 32768). Loud parts of your\n"
+            f"  speech are being squared off, which transcribes about as badly as being too\n"
+            f"  quiet. Turn the input volume DOWN in Windows sound settings - try 50%."
+        )
     elif peak < QUIET_PEAK:
-        print(f"  The signal is very quiet (peak {peak:.0f}). Whisper has little to work with.\n"
-              f"  Raise the input volume in Windows sound settings, or move closer.")
+        print(
+            f"  The signal is very quiet (peak {peak:.0f}). Whisper has little to work with.\n"
+            f"  Raise the input volume in Windows sound settings, or move closer."
+        )
     elif peak > HOT_PEAK:
-        print(f"  The signal is hot (peak {peak:.0f}) and close to clipping. Consider turning\n"
-              f"  the input volume down a little.")
+        print(
+            f"  The signal is hot (peak {peak:.0f}) and close to clipping. Consider turning\n"
+            f"  the input volume down a little."
+        )
     else:
         print(f"  Level looks healthy (rms {rms:.0f}, peak {peak:.0f}).")
 
@@ -207,13 +239,16 @@ def verdict(rms: float, peak: float, speech_frames: int, text: str | None) -> No
         return
 
     if text is None:
-        print("  Transcription was skipped (--no-whisper), so steps 1-4 are all that was "
-              "checked.")
+        print(
+            "  Transcription was skipped (--no-whisper), so steps 1-4 are all that was " "checked."
+        )
     elif not text.strip():
-        print("  ...but Whisper still produced NOTHING from it. If the level above looks fine\n"
-              "  and you definitely spoke, the likely cause is dropped audio: watch for\n"
-              "  '[audio] input overflow' in the robot's own log, which means the machine was\n"
-              "  too busy to keep up with the microphone and threw frames away.")
+        print(
+            "  ...but Whisper still produced NOTHING from it. If the level above looks fine\n"
+            "  and you definitely spoke, the likely cause is dropped audio: watch for\n"
+            "  '[audio] input overflow' in the robot's own log, which means the machine was\n"
+            "  too busy to keep up with the microphone and threw frames away."
+        )
     else:
         print(f'  ...and Whisper heard: "{text.strip()}"')
         print("  The audio path is working end to end.")
@@ -221,11 +256,14 @@ def verdict(rms: float, peak: float, speech_frames: int, text: str | None) -> No
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--seconds", type=float, default=5.0,
-                        help="how long to record (default 5)")
-    parser.add_argument("--no-whisper", action="store_true",
-                        help="skip loading the model; only check the audio path")
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--seconds", type=float, default=5.0, help="how long to record (default 5)")
+    parser.add_argument(
+        "--no-whisper",
+        action="store_true",
+        help="skip loading the model; only check the audio path",
+    )
     args = parser.parse_args()
 
     list_devices()

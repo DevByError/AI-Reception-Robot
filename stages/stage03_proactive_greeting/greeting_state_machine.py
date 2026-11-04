@@ -143,7 +143,7 @@ class GreetingStateMachine:
         self-test and Stage 03's demo are unaffected."""
         if self.state != RobotState.IDLE or not people:
             return  # if already mid-interaction, don't interrupt with a new greeting
-                     # (handled later by Stage 08)
+            # (handled later by Stage 08)
 
         self.state = RobotState.DETECTED
         self.expression.set_state(self.state)
@@ -173,10 +173,12 @@ if __name__ == "__main__":
     sm.on_interaction_timeout_or_done()
 
     print("\n== Case 3: a group, with one known person in it ==")
-    sm.on_people_entered([
-        Person(track_id=3, known_name="Omar"),
-        Person(track_id=4, known_name=None),
-    ])
+    sm.on_people_entered(
+        [
+            Person(track_id=3, known_name="Omar"),
+            Person(track_id=4, known_name=None),
+        ]
+    )
     sm.on_interaction_timeout_or_done()
 
     # --- wording variety + the recall line --------------------------------------
@@ -196,7 +198,8 @@ if __name__ == "__main__":
     print("\n== Case 5: a returning visitor the robot remembers something about ==")
     known = Person(track_id=6, known_name="Sara")
     with_recall = build_greeting(
-        [known], recall="Did you get anywhere with the Master of Computer Science?",
+        [known],
+        recall="Did you get anywhere with the Master of Computer Science?",
         rng=random.Random(1),
     )
     print(f'  "{with_recall}"')
@@ -213,7 +216,9 @@ if __name__ == "__main__":
     plain = build_greeting([known], rng=random.Random(1))
     assert plain == build_greeting([known], recall="", rng=random.Random(1)) == plain
 
-    print("\nOK: the greeting changes correctly per case (solo/known/group), the wording varies "
-          "between visits instead of repeating one fixed script, a remembered detail is spoken "
-          "before the hand-over question rather than after it, and the state returns to IDLE "
-          "after each interaction ends.")
+    print(
+        "\nOK: the greeting changes correctly per case (solo/known/group), the wording varies "
+        "between visits instead of repeating one fixed script, a remembered detail is spoken "
+        "before the hand-over question rather than after it, and the state returns to IDLE "
+        "after each interaction ends."
+    )

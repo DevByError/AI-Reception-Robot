@@ -24,10 +24,11 @@ Press 'q' in the preview window to quit.
 
 from __future__ import annotations
 
+import logging
+import sys
 import time
 
 import cv2
-
 from face_memory import FaceMemoryStore
 from robot_db import connect_or_none
 from sface_embedder import SFaceEmbedder
@@ -39,12 +40,12 @@ RECOGNIZE_EVERY_N_FRAMES = 5
 # Presence debouncing per recognized person, in recognition ticks (not frames - see
 # RECOGNIZE_EVERY_N_FRAMES). Without this, standing in frame for 20 seconds looks like 60+
 # separate "visits" - one per recognition tick - instead of one continuous visit.
-ARRIVAL_CONFIRM_TICKS = 2   # consecutive recognized ticks before counting a new visit
+ARRIVAL_CONFIRM_TICKS = 2  # consecutive recognized ticks before counting a new visit
 DEPARTURE_TIMEOUT_TICKS = 6  # consecutive missed ticks before considering them gone
 
 # Enrollment burst: how long to capture samples for, and how many we're happy with.
 ENROLLMENT_DURATION_S = 2.5
-ENROLLMENT_MIN_SAMPLES = 3   # fall back gracefully if fewer were captured (e.g. bad lighting)
+ENROLLMENT_MIN_SAMPLES = 3  # fall back gracefully if fewer were captured (e.g. bad lighting)
 
 # How long to silently watch an unrecognized face before concluding it's genuinely new and
 # asking about it. Without this, the very first failed match (a bad angle, or someone briefly
@@ -137,10 +138,14 @@ class PersonPresenceTracker:
 
 def ask_consent() -> bool:
     """Stand-in for the real voice-based consent flow (Stage 04/05/06)."""
-    answer = input(
-        "\n[robot] I don't recognize you. Would you like me to remember you for "
-        "next time? (y/n): "
-    ).strip().lower()
+    answer = (
+        input(
+            "\n[robot] I don't recognize you. Would you like me to remember you for "
+            "next time? (y/n): "
+        )
+        .strip()
+        .lower()
+    )
     return answer == "y"
 
 
@@ -167,8 +172,10 @@ def enroll_new_face(cap, embedder: SFaceEmbedder, anchor_bbox, initial_embedding
     natural head movement, so the stored face isn't fragile to a single angle/lighting
     snapshot. Shows a live preview with a capture counter so it doesn't look frozen. Falls
     back to just the initial embedding if too few samples were captured."""
-    print("[robot] Please slowly turn your head left, then right, then look straight at me "
-          "for a couple of seconds...")
+    print(
+        "[robot] Please slowly turn your head left, then right, then look straight at me "
+        "for a couple of seconds..."
+    )
 
     samples = [initial_embedding]
     start = time.monotonic()
@@ -187,14 +194,23 @@ def enroll_new_face(cap, embedder: SFaceEmbedder, anchor_bbox, initial_embedding
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 200, 0), 2)
 
         remaining = ENROLLMENT_DURATION_S - (time.monotonic() - start)
-        cv2.putText(frame, f"Capturing... {remaining:.1f}s ({len(samples)} samples)",
-                    (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+        cv2.putText(
+            frame,
+            f"Capturing... {remaining:.1f}s ({len(samples)} samples)",
+            (20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 200, 0),
+            2,
+        )
         cv2.imshow("Stage 02 - live face recognition (press q to quit)", frame)
         cv2.waitKey(1)
 
     if len(samples) < ENROLLMENT_MIN_SAMPLES:
-        print(f"[robot] Only got {len(samples)} good sample(s) - that's a bit thin, but "
-              f"I'll remember what I have and learn more as we talk.")
+        print(
+            f"[robot] Only got {len(samples)} good sample(s) - that's a bit thin, but "
+            f"I'll remember what I have and learn more as we talk."
+        )
     else:
         print(f"[robot] Got it - {len(samples)} samples captured.")
 
@@ -212,6 +228,7 @@ def draw_faces(frame, detections, statuses: dict[int, str]):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     print("Loading YuNet + SFace models...")
     embedder = SFaceEmbedder()
 
@@ -219,9 +236,7 @@ if __name__ == "__main__":
     # quit with 'q', run it again, and it should recognize you without asking. Without a
     # reachable MySQL it falls back to the old memory-only behaviour and says so.
     db = connect_or_none()
-    store = FaceMemoryStore(
-        is_match=embedder.is_match, score=embedder.similarity, db=db
-    )
+    store = FaceMemoryStore(is_match=embedder.is_match, score=embedder.similarity, db=db)
     if db is not None:
         print(f"Loaded {len(store)} known person(s) from MySQL.")
 

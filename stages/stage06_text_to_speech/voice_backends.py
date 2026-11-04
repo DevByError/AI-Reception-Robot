@@ -12,11 +12,14 @@ better experience than a natural voice that stalls - so auto falls back to Piper
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Iterator
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 # Kokoro must synthesize at least this much faster than real time to be chosen automatically.
 # 0.5 leaves room for the camera and speech recognition sharing the same CPU.
@@ -59,7 +62,7 @@ class KokoroBackend:
         self.kokoro = KokoroVoice(voice=voice)
         self.sample_rate = self.kokoro.sample_rate
         self.speed = speed
-        self.voice = None   # (LiveTTSSpeaker.voice is the Piper object, for older callers)
+        self.voice = None  # (LiveTTSSpeaker.voice is the Piper object, for older callers)
 
     def synthesize(self, text: str, rate: float = 1.0) -> Iterator[np.ndarray]:
         audio = self.kokoro.create(text, speed=self.speed * rate)
@@ -75,16 +78,22 @@ class KokoroBackend:
         return took / max(audio.size / self.sample_rate, 1e-6)
 
 
-def load_backend(choice: str, piper_model: Path, *, use_cuda: bool = False,
-                 kokoro_voice: str = "af_heart", kokoro_speed: float = 1.0,
-                 max_rtf: float = KOKORO_MAX_RTF):
+def load_backend(
+    choice: str,
+    piper_model: Path,
+    *,
+    use_cuda: bool = False,
+    kokoro_voice: str = "af_heart",
+    kokoro_speed: float = 1.0,
+    max_rtf: float = KOKORO_MAX_RTF,
+):
     """The backend TTS_BACKEND asks for, falling back to Piper with a printed reason."""
     if choice in ("auto", "kokoro"):
         try:
             backend = KokoroBackend(voice=kokoro_voice, speed=kokoro_speed)
         except Exception as exc:  # noqa: BLE001 - missing files/packages: fall back
-            reason = (f"{exc}" if isinstance(exc, FileNotFoundError) else repr(exc))
-            print(f"[tts] Kokoro voice not available ({reason}) - using Piper.")
+            reason = f"{exc}" if isinstance(exc, FileNotFoundError) else repr(exc)
+            log.info(f"[tts] Kokoro voice not available ({reason}) - using Piper.")
         else:
             rtf = backend.benchmark()
             # One timing taken while the rest of the robot is still loading can be unlucky (a
@@ -98,11 +107,15 @@ def load_backend(choice: str, piper_model: Path, *, use_cuda: bool = False,
                     if rtf <= max_rtf:
                         break
             if choice == "kokoro" or rtf <= max_rtf:
-                print(f"[tts] voice: Kokoro '{kokoro_voice}' (synthesizes {1 / rtf:.1f}x faster "
-                      f"than real time on this computer)")
+                log.info(
+                    f"[tts] voice: Kokoro '{kokoro_voice}' (synthesizes {1 / rtf:.1f}x faster "
+                    f"than real time on this computer)"
+                )
                 return backend
-            print(f"[tts] Kokoro is too slow on this computer ({1 / rtf:.1f}x real time, needs "
-                  f"{1 / max_rtf:.0f}x) - using Piper. Set TTS_BACKEND=kokoro to force it.")
+            log.info(
+                f"[tts] Kokoro is too slow on this computer ({1 / rtf:.1f}x real time, needs "
+                f"{1 / max_rtf:.0f}x) - using Piper. Set TTS_BACKEND=kokoro to force it."
+            )
     backend = PiperBackend(piper_model, use_cuda=use_cuda)
-    print(f"[tts] voice: Piper '{Path(piper_model).stem}'")
+    log.info(f"[tts] voice: Piper '{Path(piper_model).stem}'")
     return backend

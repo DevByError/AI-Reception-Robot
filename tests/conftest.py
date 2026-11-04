@@ -32,10 +32,10 @@ _SCRATCH = Path(tempfile.mkdtemp(prefix="ai-reception-robot-tests-"))
 os.environ["LUC_DB_BACKEND"] = "sqlite"
 os.environ["LUC_DB_SQLITE_PATH"] = str(_SCRATCH / "robot_memory.db")
 os.environ["LUC_IDENTITY_CACHE"] = str(_SCRATCH / "identity_cache.json")
-(_SCRATCH / "identity_cache.json").write_text(json.dumps({"robot_name": "Nova"}),
-                                              encoding="utf-8")
+(_SCRATCH / "identity_cache.json").write_text(json.dumps({"robot_name": "Nova"}), encoding="utf-8")
 
 
 def pytest_configure(config):
     config.addinivalue_line(
-        "markers", "e2e: whole-robot simulation in a fake room (slow; -m 'not e2e' skips it)")
+        "markers", "e2e: whole-robot simulation in a fake room (slow; -m 'not e2e' skips it)"
+    )

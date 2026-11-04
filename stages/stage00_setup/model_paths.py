@@ -25,8 +25,9 @@ MODELS_DIR = PROJECT_ROOT / "models"
 # Kokoro-82M (Apache-2.0) - the natural-sounding voice. The fp16 export (~170MB) is the one to
 # use on a CPU: measured 3-4x FASTER than the int8 export (RTF ~0.3 vs ~1.1 on 4 cores), which
 # spends its time converting back and forth. Override with LUC_KOKORO_MODEL=<path>.
-KOKORO_MODEL = Path(os.environ.get("LUC_KOKORO_MODEL")
-                    or MODELS_DIR / "kokoro" / "kokoro-v1.0.fp16.onnx")
+KOKORO_MODEL = Path(
+    os.environ.get("LUC_KOKORO_MODEL") or MODELS_DIR / "kokoro" / "kokoro-v1.0.fp16.onnx"
+)
 KOKORO_VOICES = MODELS_DIR / "kokoro" / "voices-v1.0.bin"
 
 # Pipecat smart-turn v3.2 (BSD-2-Clause) - "has this person finished their turn?" from audio.

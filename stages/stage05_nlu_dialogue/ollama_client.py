@@ -67,8 +67,8 @@ EMBED_MODEL = os.environ.get("LUC_OLLAMA_EMBED_MODEL", "nomic-embed-text")
 # weights off disk into VRAM), which is why warm_up() exists - pay it at startup, not while
 # somebody is standing there waiting.
 CHAT_TIMEOUT_S = 60.0
-EMBED_TIMEOUT_S = 120.0   # a bulk startup embed of thousands of chunks goes through one call
-PROBE_TIMEOUT_S = 2.0     # is_available() must never be the thing that delays startup
+EMBED_TIMEOUT_S = 120.0  # a bulk startup embed of thousands of chunks goes through one call
+PROBE_TIMEOUT_S = 2.0  # is_available() must never be the thing that delays startup
 
 # The FIRST call after a fresh `ollama pull` is in a different league from every later one: the
 # weights aren't in the OS page cache yet, so 2GB gets read off disk before the model can even
@@ -127,9 +127,14 @@ def has_model(name: str) -> bool:
     return any(m == name or m == wanted for m in installed_models())
 
 
-def chat(prompt: str, system: str | None = None, temperature: float = 0.2,
-         model: str = CHAT_MODEL, max_tokens: int = MAX_TOKENS,
-         timeout_s: float = CHAT_TIMEOUT_S) -> str:
+def chat(
+    prompt: str,
+    system: str | None = None,
+    temperature: float = 0.2,
+    model: str = CHAT_MODEL,
+    max_tokens: int = MAX_TOKENS,
+    timeout_s: float = CHAT_TIMEOUT_S,
+) -> str:
     """One non-streaming chat completion. Returns the assistant's text.
 
     Still here, and still the right call for everything that needs a COMPLETE answer before it
@@ -165,9 +170,14 @@ def chat(prompt: str, system: str | None = None, temperature: float = 0.2,
     return content.strip()
 
 
-def chat_stream(prompt: str, system: str | None = None, temperature: float = 0.2,
-                model: str = CHAT_MODEL, max_tokens: int = MAX_TOKENS,
-                timeout_s: float = CHAT_TIMEOUT_S):
+def chat_stream(
+    prompt: str,
+    system: str | None = None,
+    temperature: float = 0.2,
+    model: str = CHAT_MODEL,
+    max_tokens: int = MAX_TOKENS,
+    timeout_s: float = CHAT_TIMEOUT_S,
+):
     """Same call as chat(), yielding the answer in pieces as the model produces them.
 
     Added 2026-09-05 for the streaming answer path: Stage 06's LiveTTSSpeaker.speak_stream()
@@ -220,8 +230,12 @@ def chat_stream(prompt: str, system: str | None = None, temperature: float = 0.2
         raise OllamaError(f"model {model!r} returned an empty streamed response")
 
 
-def embed(texts: list[str], is_query: bool = False, model: str = EMBED_MODEL,
-          timeout_s: float = EMBED_TIMEOUT_S) -> list[list[float]]:
+def embed(
+    texts: list[str],
+    is_query: bool = False,
+    model: str = EMBED_MODEL,
+    timeout_s: float = EMBED_TIMEOUT_S,
+) -> list[list[float]]:
     """Embeds one or more texts. Returns raw (un-normalized) vectors - the caller normalizes,
     see OllamaEmbeddingBackend in knowledge_base.py.
 
@@ -256,8 +270,11 @@ def embed(texts: list[str], is_query: bool = False, model: str = EMBED_MODEL,
             detail = response.json().get("error", "")
         except ValueError:
             detail = response.text[:200]
-        hint = (f" - {len(texts)} inputs in one request is likely too many; batch them smaller"
-                if len(texts) > 64 else "")
+        hint = (
+            f" - {len(texts)} inputs in one request is likely too many; batch them smaller"
+            if len(texts) > 64
+            else ""
+        )
         raise OllamaError(
             f"embed request to {OLLAMA_HOST} failed: {exc}{hint}"
             + (f" (server said: {detail})" if detail else "")
@@ -287,8 +304,14 @@ def warm_up(model: str = CHAT_MODEL) -> float:
     interpret; this only reports the cost.
     """
     started = time.monotonic()
-    chat("Say OK.", system="Reply with exactly: OK", temperature=0.0, model=model,
-         max_tokens=5, timeout_s=WARM_UP_TIMEOUT_S)
+    chat(
+        "Say OK.",
+        system="Reply with exactly: OK",
+        temperature=0.0,
+        model=model,
+        max_tokens=5,
+        timeout_s=WARM_UP_TIMEOUT_S,
+    )
     return time.monotonic() - started
 
 
@@ -296,10 +319,12 @@ def describe() -> str:
     """One line for a startup log: what's running and what's pulled."""
     if not is_available():
         return f"Ollama: not reachable at {OLLAMA_HOST}"
-    return (f"Ollama at {OLLAMA_HOST}: chat={CHAT_MODEL} "
-            f"({'ready' if has_model(CHAT_MODEL) else 'NOT PULLED'}), "
-            f"embed={EMBED_MODEL} "
-            f"({'ready' if has_model(EMBED_MODEL) else 'NOT PULLED'})")
+    return (
+        f"Ollama at {OLLAMA_HOST}: chat={CHAT_MODEL} "
+        f"({'ready' if has_model(CHAT_MODEL) else 'NOT PULLED'}), "
+        f"embed={EMBED_MODEL} "
+        f"({'ready' if has_model(EMBED_MODEL) else 'NOT PULLED'})"
+    )
 
 
 if __name__ == "__main__":
@@ -330,8 +355,10 @@ if __name__ == "__main__":
 
     print(f"\nWarming up {CHAT_MODEL} (loads it into VRAM)...")
     load_s = warm_up()
-    print(f"  loaded and answered in {load_s:.1f}s (this is the cost the robot pays at startup, "
-          f"not per question)")
+    print(
+        f"  loaded and answered in {load_s:.1f}s (this is the cost the robot pays at startup, "
+        f"not per question)"
+    )
 
     print("\nTiming a realistic grounded answer...")
     started = time.monotonic()
@@ -339,24 +366,29 @@ if __name__ == "__main__":
         "Information:\n- The Engineering department is on the third floor.\n\n"
         "Question: where is the engineering department?",
         system="You are a university reception robot. Every answer is spoken aloud, so reply in "
-               "one plain spoken sentence. Answer using ONLY the information given.",
+        "one plain spoken sentence. Answer using ONLY the information given.",
     )
     elapsed = time.monotonic() - started
     print(f"  [{elapsed:.1f}s] {answer!r}")
     if elapsed > 3.0:
-        print(f"  NOTE: {elapsed:.1f}s is slower than the under-3s target in STAGES.md's success "
-              f"metrics. A smaller chat model (LUC_OLLAMA_CHAT_MODEL) is the lever here - most "
-              f"real questions hit the knowledge base's is_direct_answer fast path and never "
-              f"reach a model at all, so this cost applies to the harder questions only.")
+        print(
+            f"  NOTE: {elapsed:.1f}s is slower than the under-3s target in STAGES.md's success "
+            f"metrics. A smaller chat model (LUC_OLLAMA_CHAT_MODEL) is the lever here - most "
+            f"real questions hit the knowledge base's is_direct_answer fast path and never "
+            f"reach a model at all, so this cost applies to the harder questions only."
+        )
 
     print(f"\nTiming embeddings with {EMBED_MODEL}...")
     started = time.monotonic()
-    doc_vectors = embed(["The Engineering department is on the third floor.",
-                          "The library is on the ground floor."])
+    doc_vectors = embed(
+        ["The Engineering department is on the third floor.", "The library is on the ground floor."]
+    )
     query_vector = embed(["where is the engineering department"], is_query=True)
     elapsed = time.monotonic() - started
-    print(f"  {len(doc_vectors)} document vector(s) + 1 query vector in {elapsed * 1000:.0f}ms, "
-          f"{len(doc_vectors[0])} dimensions each")
+    print(
+        f"  {len(doc_vectors)} document vector(s) + 1 query vector in {elapsed * 1000:.0f}ms, "
+        f"{len(doc_vectors[0])} dimensions each"
+    )
 
     # Proves the vectors actually separate a relevant chunk from an irrelevant one - a backend
     # that returns well-formed but meaningless numbers would pass every check above.
@@ -372,6 +404,8 @@ if __name__ == "__main__":
     if relevant > irrelevant:
         print("\nOK: chat and embeddings both work, and retrieval actually discriminates.")
     else:
-        print("\nWARNING: the irrelevant chunk scored at least as high as the relevant one - "
-              "something is wrong with the embedding model or the task prefixes.")
+        print(
+            "\nWARNING: the irrelevant chunk scored at least as high as the relevant one - "
+            "something is wrong with the embedding model or the task prefixes."
+        )
         sys.exit(1)

@@ -14,6 +14,7 @@ replaced with a real implementation stage by stage, without changing the loop lo
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -28,22 +29,22 @@ for stage_folder in [
 ]:
     sys.path.append(str(STAGES_DIR / stage_folder))
 
-from presence_detector import (
-    DetectedPerson,
-    MockFrameSource,
-    PresenceDetector,
-)  # noqa: E402
-from face_memory import FaceMemoryStore, FaceRecognitionFlow  # noqa: E402
-from greeting_state_machine import (  # noqa: E402
+from dialogue_manager import DialogueManager, MockAnswerGenerator
+from face_memory import FaceMemoryStore, FaceRecognitionFlow
+from greeting_state_machine import (
     ExpressionController,
     GreetingStateMachine,
     Person,
     RobotState,
 )
-from stt_listener import MockSTTEngine, STTListener, VoiceActivityDetector  # noqa: E402
-from knowledge_base import KnowledgeBase, KnowledgeChunk  # noqa: E402
-from dialogue_manager import DialogueManager, MockAnswerGenerator  # noqa: E402
-from tts_speaker import MockTTSEngine, TTSSpeaker  # noqa: E402
+from knowledge_base import KnowledgeBase, KnowledgeChunk
+from presence_detector import (
+    DetectedPerson,
+    MockFrameSource,
+    PresenceDetector,
+)
+from stt_listener import MockSTTEngine, STTListener, VoiceActivityDetector
+from tts_speaker import MockTTSEngine, TTSSpeaker
 
 
 class RobotOrchestrator:
@@ -59,9 +60,7 @@ class RobotOrchestrator:
         self.face_flow = FaceRecognitionFlow(self.face_store)
         self.expression = ExpressionController()
         self.tts_speaker = TTSSpeaker(MockTTSEngine())
-        self.greeting_sm = GreetingStateMachine(
-            self.expression, _TTSAdapter(self.tts_speaker)
-        )
+        self.greeting_sm = GreetingStateMachine(self.expression, _TTSAdapter(self.tts_speaker))
         self.stt = STTListener(MockSTTEngine(), VoiceActivityDetector(), locale="en-US")
 
         self.kb = KnowledgeBase()
@@ -147,6 +146,7 @@ class _TTSAdapter:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     orchestrator = RobotOrchestrator()
 
     print("== Visit 1: a new student asks about the CS department ==")

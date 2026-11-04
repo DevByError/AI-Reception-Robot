@@ -19,6 +19,7 @@ Audio is int16 mono numpy arrays everywhere.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
@@ -26,8 +27,10 @@ from typing import Callable, Iterable
 
 import numpy as np
 
+log = logging.getLogger(__name__)
+
 BLOCK_MS = 40
-MAX_AHEAD_MS = 200      # continuous mode: how much audio may wait in the queue for the speaker
+MAX_AHEAD_MS = 200  # continuous mode: how much audio may wait in the queue for the speaker
 # A running speaker stream that has not asked for audio for this long is stuck and is reopened;
 # a newly opened one gets longer to make its first request.
 STALL_S = 1.0
@@ -48,9 +51,14 @@ class _ContinuousOutput:
     WebRTC does it, and it saves opening a device before every sentence.
     """
 
-    def __init__(self, sample_rate: int, device: int | None, block: int,
-                 tap: Callable[[np.ndarray], None] | None,
-                 note_level: Callable[[float, np.ndarray], None]):
+    def __init__(
+        self,
+        sample_rate: int,
+        device: int | None,
+        block: int,
+        tap: Callable[[np.ndarray], None] | None,
+        note_level: Callable[[float, np.ndarray], None],
+    ):
         import sounddevice as sd
 
         self.rate = int(sample_rate)
@@ -58,16 +66,22 @@ class _ContinuousOutput:
         self._tap = tap
         self._note_level = note_level
         self._q: deque[np.ndarray] = deque()
-        self._queued = 0          # samples waiting
-        self._enqueued = 0        # samples ever queued
-        self._done = 0            # samples ever played or dropped
+        self._queued = 0  # samples waiting
+        self._enqueued = 0  # samples ever queued
+        self._done = 0  # samples ever played or dropped
         self._cond = threading.Condition()
         self.last_callback = time.monotonic()
-        self._calling = False     # has the sound card asked for audio yet?
+        self._calling = False  # has the sound card asked for audio yet?
         self.underflows = 0
         self.broken = False
-        self.stream = sd.RawOutputStream(samplerate=self.rate, channels=1, dtype="int16",
-                                         blocksize=block, device=device, callback=self._callback)
+        self.stream = sd.RawOutputStream(
+            samplerate=self.rate,
+            channels=1,
+            dtype="int16",
+            blocksize=block,
+            device=device,
+            callback=self._callback,
+        )
         self.latency = float(getattr(self.stream, "latency", 0.0) or 0.0)
         self.stream.start()
 
@@ -80,7 +94,7 @@ class _ContinuousOutput:
             while filled < frames and self._q:
                 head = self._q[0]
                 take = min(frames - filled, head.size)
-                buf[filled:filled + take] = head[:take]
+                buf[filled : filled + take] = head[:take]
                 if take == head.size:
                     self._q.popleft()
                 else:
@@ -114,14 +128,19 @@ class _ContinuousOutput:
         limit = STALL_S if self._calling else FIRST_CALLBACK_S
         if time.monotonic() - self.last_callback > limit:
             if not self.broken:
-                print("[audio] the speaker stream stopped asking for audio - it will be reopened.")
+                log.info(
+                    "[audio] the speaker stream stopped asking for audio - it will be reopened."
+                )
             self.broken = True
         return not self.broken
 
     def wait_room(self, max_ahead: int, stop: threading.Event | None) -> None:
         with self._cond:
-            while (self._queued > max_ahead and not (stop is not None and stop.is_set())
-                   and self._alive()):
+            while (
+                self._queued > max_ahead
+                and not (stop is not None and stop.is_set())
+                and self._alive()
+            ):
                 self._cond.wait(0.02)
 
     def wait_done(self, mark: int, stop: threading.Event | None) -> bool:
@@ -153,9 +172,13 @@ class _ContinuousOutput:
 
 
 class AudioPlayer:
-    def __init__(self, device: int | None = None,
-                 far_tap_factory: Callable[[int], Callable[[np.ndarray], None]] | None = None,
-                 block_ms: int = BLOCK_MS, continuous: bool | None = None):
+    def __init__(
+        self,
+        device: int | None = None,
+        far_tap_factory: Callable[[int], Callable[[np.ndarray], None]] | None = None,
+        block_ms: int = BLOCK_MS,
+        continuous: bool | None = None,
+    ):
         self.device = device
         self.far_tap_factory = far_tap_factory
         self.block_ms = block_ms
@@ -164,7 +187,7 @@ class AudioPlayer:
         self._out: _ContinuousOutput | None = None
         self._levels: deque[tuple[float, float]] = deque(maxlen=400)
         self._levels_lock = threading.Lock()
-        self._play_lock = threading.Lock()   # one sound at a time: the AEC reference is one stream
+        self._play_lock = threading.Lock()  # one sound at a time: the AEC reference is one stream
         self.playing = threading.Event()
 
     # -- loudness for the face -----------------------------------------------------------------
@@ -180,14 +203,20 @@ class AudioPlayer:
             return level
 
     def _note_level(self, when: float, block: np.ndarray) -> None:
-        rms = float(np.sqrt(np.mean(block.astype(np.float32) ** 2))) / 32768.0 if block.size else 0.0
+        rms = (
+            float(np.sqrt(np.mean(block.astype(np.float32) ** 2))) / 32768.0 if block.size else 0.0
+        )
         with self._levels_lock:
             self._levels.append((when, min(1.0, rms * 6.0)))
 
     # -- playback --------------------------------------------------------------------------------
-    def play(self, chunks: Iterable[np.ndarray], sample_rate: int,
-             stop: threading.Event | None = None,
-             on_first_audio: Callable[[], None] | None = None) -> dict:
+    def play(
+        self,
+        chunks: Iterable[np.ndarray],
+        sample_rate: int,
+        stop: threading.Event | None = None,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> dict:
         """Plays int16 chunks as they arrive (a generator is fine - that is how streaming works).
 
         Opens one stream for the whole call, lazily on the first chunk (or, in continuous mode,
@@ -217,10 +246,14 @@ class AudioPlayer:
                         if stop is not None and stop.is_set():
                             stopped = True
                             break
-                        piece = pcm[i:i + block]
+                        piece = pcm[i : i + block]
                         if stream is None:
-                            stream = sd.RawOutputStream(samplerate=sample_rate, channels=1,
-                                                        dtype="int16", device=self.device)
+                            stream = sd.RawOutputStream(
+                                samplerate=sample_rate,
+                                channels=1,
+                                dtype="int16",
+                                device=self.device,
+                            )
                             stream.start()
                         if first_audio_ms is None:
                             first_audio_ms = (time.monotonic() - start) * 1000
@@ -228,8 +261,10 @@ class AudioPlayer:
                                 try:
                                     on_first_audio()
                                 except Exception as exc:  # noqa: BLE001 - an observer only
-                                    print(f"[tts] first-audio callback failed ({exc!r}) - "
-                                          f"continuing to speak.")
+                                    log.warning(
+                                        f"[tts] first-audio callback failed ({exc!r}) - "
+                                        f"continuing to speak."
+                                    )
                         if tap is not None:
                             try:
                                 tap(piece)
@@ -255,8 +290,11 @@ class AudioPlayer:
                 self.playing.clear()
                 with self._levels_lock:
                     self._levels.append((time.monotonic(), 0.0))
-        return {"first_audio_ms": first_audio_ms, "seconds": played / float(sample_rate),
-                "stopped": stopped}
+        return {
+            "first_audio_ms": first_audio_ms,
+            "seconds": played / float(sample_rate),
+            "stopped": stopped,
+        }
 
     def _output(self, sample_rate: int) -> _ContinuousOutput:
         out = self._out
@@ -266,8 +304,9 @@ class AudioPlayer:
         if out is None:
             tap = self.far_tap_factory(sample_rate) if self.far_tap_factory else None
             block = max(1, int(sample_rate * self.block_ms / 1000))
-            out = self._out = _ContinuousOutput(sample_rate, self.device, block, tap,
-                                                self._note_level)
+            out = self._out = _ContinuousOutput(
+                sample_rate, self.device, block, tap, self._note_level
+            )
         return out
 
     def _play_continuous(self, chunks, sample_rate, stop, on_first_audio) -> dict:
@@ -298,9 +337,11 @@ class AudioPlayer:
                                 try:
                                     on_first_audio()
                                 except Exception as exc:  # noqa: BLE001 - an observer only
-                                    print(f"[tts] first-audio callback failed ({exc!r}) - "
-                                          f"continuing to speak.")
-                        piece = pcm[i:i + block].copy()
+                                    log.warning(
+                                        f"[tts] first-audio callback failed ({exc!r}) - "
+                                        f"continuing to speak."
+                                    )
+                        piece = pcm[i : i + block].copy()
                         mark = out.enqueue(piece)
                         played += piece.size
                     if stopped:
@@ -311,8 +352,11 @@ class AudioPlayer:
                     out.clear()
             finally:
                 self.playing.clear()
-        return {"first_audio_ms": first_audio_ms, "seconds": played / float(sample_rate),
-                "stopped": stopped}
+        return {
+            "first_audio_ms": first_audio_ms,
+            "seconds": played / float(sample_rate),
+            "stopped": stopped,
+        }
 
     def close(self) -> None:
         """Stops the always-running stream (continuous mode). Safe to call more than once."""
@@ -320,15 +364,17 @@ class AudioPlayer:
         if out is not None:
             out.close()
 
-    def play_async(self, pcm: np.ndarray, sample_rate: int,
-                   stop: threading.Event | None = None) -> threading.Thread:
+    def play_async(
+        self, pcm: np.ndarray, sample_rate: int, stop: threading.Event | None = None
+    ) -> threading.Thread:
         """Fire-and-forget playback of one clip (fillers, "mm-hm"). Errors are printed, never
         raised - a missing acknowledgment must not cost the visitor their answer."""
+
         def _run() -> None:
             try:
                 self.play([pcm], sample_rate, stop=stop)
             except Exception as exc:  # noqa: BLE001
-                print(f"[audio] playback failed ({exc!r}).")
+                log.warning(f"[audio] playback failed ({exc!r}).")
 
         thread = threading.Thread(target=_run, name="clip-playback", daemon=True)
         thread.start()

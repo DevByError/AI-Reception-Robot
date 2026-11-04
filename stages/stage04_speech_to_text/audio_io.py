@@ -32,6 +32,7 @@ Run: python audio_io.py              (lists devices, then shows the live mic lev
 from __future__ import annotations
 
 import argparse
+import logging
 import queue
 import subprocess
 import sys
@@ -42,12 +43,15 @@ from pathlib import Path
 
 import numpy as np
 
+log = logging.getLogger(__name__)
+
 AEC_RATE = 16000
-AEC_FRAME = 160            # WebRTC processes 10ms frames
-FAR_FIFO_MAX_S = 1.5       # never hold more reference audio than this (the mic is not running)
+AEC_FRAME = 160  # WebRTC processes 10ms frames
+FAR_FIFO_MAX_S = 1.5  # never hold more reference audio than this (the mic is not running)
 
 
 # --- devices ----------------------------------------------------------------------------------
+
 
 def resolve_device(spec: str | int | None, kind: str) -> int | None:
     """MIC_DEVICE / SPEAKER_DEVICE -> a sounddevice index, or None for the system default.
@@ -68,14 +72,18 @@ def resolve_device(spec: str | int | None, kind: str) -> int | None:
         index = int(spec)
         if 0 <= index < len(devices) and devices[index][channels_key] > 0:
             return index
-        print(f"[audio] {kind} device {index} does not exist or has no {kind} channels - "
-              f"using the system default. Run stages/stage00_setup/list_audio_devices.py.")
+        log.info(
+            f"[audio] {kind} device {index} does not exist or has no {kind} channels - "
+            f"using the system default. Run stages/stage00_setup/list_audio_devices.py."
+        )
         return None
     for index, dev in enumerate(devices):
         if spec.lower() in dev["name"].lower() and dev[channels_key] > 0:
             return index
-    print(f"[audio] no {kind} device matches {spec!r} - using the system default. Run "
-          f"stages/stage00_setup/list_audio_devices.py to see the names.")
+    log.info(
+        f"[audio] no {kind} device matches {spec!r} - using the system default. Run "
+        f"stages/stage00_setup/list_audio_devices.py to see the names."
+    )
     return None
 
 
@@ -89,6 +97,7 @@ def device_name(index: int | None, kind: str) -> str:
 
 
 # --- resampling (for the echo reference) -------------------------------------------------------
+
 
 class _ToAecRate:
     """Converts what the speaker plays (22050Hz Piper, 24000Hz Kokoro, ...) to 16kHz mono for
@@ -125,7 +134,7 @@ class _ToAecRate:
         if self._fir is not None:
             joined = np.concatenate((self._hist, x))
             x = np.convolve(joined, self._fir, mode="valid")
-            self._hist = joined[-(self.TAPS - 1):]
+            self._hist = joined[-(self.TAPS - 1) :]
         step = self.in_rate / AEC_RATE
         padded = np.concatenate(([self._last], x))
         positions = np.arange(self._pos, x.size, step)
@@ -136,6 +145,7 @@ class _ToAecRate:
 
 
 # --- echo cancellation -------------------------------------------------------------------------
+
 
 class EchoCanceller:
     """WebRTC AEC3 between what the speaker plays and what the microphone hears.
@@ -169,10 +179,12 @@ class EchoCanceller:
 
         self._rtc = rtc
         self._apm = rtc.AudioProcessingModule(
-            echo_cancellation=True, noise_suppression=noise_suppression,
-            high_pass_filter=True, auto_gain_control=False,
+            echo_cancellation=True,
+            noise_suppression=noise_suppression,
+            high_pass_filter=True,
+            auto_gain_control=False,
         )
-        self._far: deque[tuple[np.ndarray, float | None]] = deque()   # (frame, not before)
+        self._far: deque[tuple[np.ndarray, float | None]] = deque()  # (frame, not before)
         self._far_pending = np.zeros(0, dtype=np.int16)
         self._lock = threading.Lock()
         self._zeros = np.zeros(AEC_FRAME, dtype=np.int16).tobytes()
@@ -180,24 +192,28 @@ class EchoCanceller:
         self.far_frames_used = 0
         self.far_frames_dropped = 0
         self.drift_corrections = 0
-        self._low: int | None = None          # lowest FIFO length in the current window
+        self._low: int | None = None  # lowest FIFO length in the current window
         self._low_target: int | None = None
         self._windows = 0
         self._window_frames = 0
 
     @classmethod
-    def create(cls, wanted: str = "auto", noise_suppression: bool = False) -> "EchoCanceller | None":
+    def create(cls, wanted: str = "auto", noise_suppression: bool = False) -> EchoCanceller | None:
         """The canceller, or None (with one line saying why) when it is off or unavailable."""
         if wanted not in ("auto", "true"):
             return None
         try:
             canceller = cls(noise_suppression=noise_suppression)
         except Exception as exc:  # noqa: BLE001 - ImportError, or a native library problem
-            print(f"[aec] echo cancellation unavailable ({exc!r}) - pip install livekit==1.0.0. "
-                  f"The robot will still work; barge-in falls back to the loudness check.")
+            log.warning(
+                f"[aec] echo cancellation unavailable ({exc!r}) - pip install livekit==1.0.0. "
+                f"The robot will still work; barge-in falls back to the loudness check."
+            )
             return None
-        print("[aec] software echo cancellation ON (WebRTC AEC3) - the robot will not hear "
-              "its own voice.")
+        log.info(
+            "[aec] software echo cancellation ON (WebRTC AEC3) - the robot will not hear "
+            "its own voice."
+        )
         return canceller
 
     # -- the speaker side --
@@ -218,12 +234,13 @@ class EchoCanceller:
         with self._lock:
             starts_stretch = not self._far
             if starts_stretch:
-                self._far_pending = np.zeros(0, dtype=np.int16)   # leftovers of the last one
+                self._far_pending = np.zeros(0, dtype=np.int16)  # leftovers of the last one
             x = np.concatenate((self._far_pending, x)) if self._far_pending.size else x
             whole = x.size // AEC_FRAME * AEC_FRAME
             for start in range(0, whole, AEC_FRAME):
-                self._far.append((x[start:start + AEC_FRAME],
-                                  at if starts_stretch and start == 0 else None))
+                self._far.append(
+                    (x[start : start + AEC_FRAME], at if starts_stretch and start == 0 else None)
+                )
             self._far_pending = x[whole:].copy()
             limit = int(FAR_FIFO_MAX_S * AEC_RATE / AEC_FRAME)
             while len(self._far) > limit:
@@ -240,21 +257,24 @@ class EchoCanceller:
         with self._lock:
             if self._far:
                 frame, not_before = self._far[0]
-                if (not_before is not None and captured_at is not None
-                        and captured_at + AEC_FRAME / AEC_RATE / 2 < not_before):
+                if (
+                    not_before is not None
+                    and captured_at is not None
+                    and captured_at + AEC_FRAME / AEC_RATE / 2 < not_before
+                ):
                     return self._zeros
                 self._far.popleft()
                 self.far_frames_used += 1
                 return frame.tobytes()
         return self._zeros
 
-    DRIFT_WINDOW = 100     # 10ms frames: the low-water mark is taken over one second
-    DRIFT_FRAMES = 4       # move it back once it is 40ms away from where it settled
+    DRIFT_WINDOW = 100  # 10ms frames: the low-water mark is taken over one second
+    DRIFT_FRAMES = 4  # move it back once it is 40ms away from where it settled
 
     def _track_drift(self) -> None:
         with self._lock:
             n = len(self._far)
-            if n == 0:   # not continuous (startup, a stall): start over
+            if n == 0:  # not continuous (startup, a stall): start over
                 self._low = self._low_target = None
                 self._windows = self._window_frames = 0
                 return
@@ -264,7 +284,7 @@ class EchoCanceller:
                 return
             low, self._low, self._window_frames = self._low, None, 0
             self._windows += 1
-            if self._windows < 3:          # let the stream settle first
+            if self._windows < 3:  # let the stream settle first
                 self._low_target = low
                 return
             off = low - self._low_target
@@ -294,11 +314,11 @@ class EchoCanceller:
         step = AEC_FRAME * 2
         count = len(frame) // step
         for i, start in enumerate(range(0, len(frame) - step + 1, step)):
-            at = (None if captured_end is None
-                  else captured_end - (count - i) * AEC_FRAME / AEC_RATE)
+            at = None if captured_end is None else captured_end - (count - i) * AEC_FRAME / AEC_RATE
             self._apm.process_reverse_stream(
-                rtc.AudioFrame(self._pop_far(at), AEC_RATE, 1, AEC_FRAME))
-            mic = rtc.AudioFrame(frame[start:start + step], AEC_RATE, 1, AEC_FRAME)
+                rtc.AudioFrame(self._pop_far(at), AEC_RATE, 1, AEC_FRAME)
+            )
+            mic = rtc.AudioFrame(frame[start : start + step], AEC_RATE, 1, AEC_FRAME)
             self._apm.process_stream(mic)
             out += bytes(mic.data)
             self.frames_processed += 1
@@ -308,14 +328,23 @@ class EchoCanceller:
 
 # --- microphone capture ------------------------------------------------------------------------
 
+
 class MicCapture:
     """Opens the microphone and puts 30ms int16 frames on audio_q - cleaned by the echo
     canceller first when there is one. Used as a context manager exactly like the
     sd.RawInputStream it replaces (`with self.mic_stream:`)."""
 
-    def __init__(self, audio_q: "queue.Queue[bytes]", *, sample_rate: int = 16000,
-                 frame_samples: int = 480, block_frames: int = 3, device: int | None = None,
-                 canceller: EchoCanceller | None = None, use_process: bool = False):
+    def __init__(
+        self,
+        audio_q: queue.Queue[bytes],
+        *,
+        sample_rate: int = 16000,
+        frame_samples: int = 480,
+        block_frames: int = 3,
+        device: int | None = None,
+        canceller: EchoCanceller | None = None,
+        use_process: bool = False,
+    ):
         self.audio_q = audio_q
         self.sample_rate = sample_rate
         self.frame_bytes = frame_samples * 2
@@ -326,8 +355,8 @@ class MicCapture:
         self.mode = "not started"
         self._stream = None
         self._proc: subprocess.Popen | None = None
-        self._raw_q: "queue.Queue[tuple[bytes, float] | None]" = queue.Queue()
-        self._clock: float | None = None     # when the last delivered block ended - _stamp()
+        self._raw_q: queue.Queue[tuple[bytes, float] | None] = queue.Queue()
+        self._clock: float | None = None  # when the last delivered block ended - _stamp()
         self._threads: list[threading.Thread] = []
         self._running = threading.Event()
         self._leftover = b""
@@ -357,14 +386,19 @@ class MicCapture:
             # the end of the last whole frame, i.e. before any leftover samples
             end = self._stamp(arrived, len(raw) // 2) - len(self._leftover) / 2 / self.sample_rate
         for start in range(0, whole, self.frame_bytes):
-            frame = data[start:start + self.frame_bytes]
+            frame = data[start : start + self.frame_bytes]
             if self.canceller is not None:
-                captured_end = (None if end is None else
-                                end - (whole - start - self.frame_bytes) / 2 / self.sample_rate)
+                captured_end = (
+                    None
+                    if end is None
+                    else end - (whole - start - self.frame_bytes) / 2 / self.sample_rate
+                )
                 try:
                     frame = self.canceller.process(frame, captured_end)
                 except Exception as exc:  # noqa: BLE001 - never lose the microphone over AEC
-                    print(f"[aec] processing failed ({exc!r}) - echo cancellation switched off.")
+                    log.warning(
+                        f"[aec] processing failed ({exc!r}) - echo cancellation switched off."
+                    )
                     self.canceller = None
             self.audio_q.put(frame)
 
@@ -381,8 +415,11 @@ class MicCapture:
 
         def _on_audio(indata, frames, time_info, status):
             if status:
-                detail = (" - microphone audio was DROPPED; expect a poor or empty transcript"
-                          if status.input_overflow else "")
+                detail = (
+                    " - microphone audio was DROPPED; expect a poor or empty transcript"
+                    if status.input_overflow
+                    else ""
+                )
                 print(f"[audio] {status}{detail}", file=sys.stderr)
             if self.canceller is not None:
                 # AEC runs on the worker, not in the callback; the arrival time goes with it
@@ -391,16 +428,28 @@ class MicCapture:
                 self._deliver(bytes(indata))
 
         self._stream = sd.RawInputStream(
-            samplerate=self.sample_rate, blocksize=self.blocksize, dtype="int16", channels=1,
-            device=self.device, callback=_on_audio,
+            samplerate=self.sample_rate,
+            blocksize=self.blocksize,
+            dtype="int16",
+            channels=1,
+            device=self.device,
+            callback=_on_audio,
         )
         self._stream.start()
         self.mode = "in-process"
 
     # -- separate capture process --
     def _capture_command(self) -> list[str]:
-        cmd = [sys.executable, "-u", str(Path(__file__).resolve()), "--capture",
-               "--rate", str(self.sample_rate), "--block", str(self.blocksize)]
+        cmd = [
+            sys.executable,
+            "-u",
+            str(Path(__file__).resolve()),
+            "--capture",
+            "--rate",
+            str(self.sample_rate),
+            "--block",
+            str(self.blocksize),
+        ]
         if self.device is not None:
             cmd += ["--device", str(self.device)]
         return cmd
@@ -408,10 +457,11 @@ class MicCapture:
     def _start_process(self) -> bool:
         cmd = self._capture_command()
         try:
-            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                                          bufsize=0)
+            self._proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, bufsize=0
+            )
         except Exception as exc:  # noqa: BLE001
-            print(f"[audio] could not start the capture process ({exc!r}).")
+            log.warning(f"[audio] could not start the capture process ({exc!r}).")
             return False
         first = threading.Event()
 
@@ -424,8 +474,11 @@ class MicCapture:
                 first.set()
                 self._raw_q.put((chunk, time.monotonic()))
             if self._running.is_set():
-                print("[audio] the capture process stopped - restarting the microphone "
-                      "in-process.", file=sys.stderr)
+                print(
+                    "[audio] the capture process stopped - restarting the microphone "
+                    "in-process.",
+                    file=sys.stderr,
+                )
                 try:
                     self._start_in_process()
                 except Exception as exc:  # noqa: BLE001
@@ -435,8 +488,10 @@ class MicCapture:
         thread.start()
         self._threads.append(thread)
         if not first.wait(5.0):
-            print("[audio] the capture process sent no audio within 5s - using in-process "
-                  "capture instead.")
+            log.info(
+                "[audio] the capture process sent no audio within 5s - using in-process "
+                "capture instead."
+            )
             self._stop_process()
             return False
         self.mode = "separate process"
@@ -465,8 +520,10 @@ class MicCapture:
             pass
         else:
             self._start_in_process()
-        print(f"[audio] microphone: {device_name(self.device, 'input')} "
-              f"({self.mode}{', echo-cancelled' if self.canceller else ''})")
+        log.info(
+            f"[audio] microphone: {device_name(self.device, 'input')} "
+            f"({self.mode}{', echo-cancelled' if self.canceller else ''})"
+        )
 
     def stop(self) -> None:
         self._running.clear()
@@ -480,7 +537,7 @@ class MicCapture:
         self._stop_process()
         self._raw_q.put(None)
 
-    def __enter__(self) -> "MicCapture":
+    def __enter__(self) -> MicCapture:
         self.start()
         return self
 
@@ -498,15 +555,21 @@ def _capture_main(rate: int, block: int, device: int | None) -> None:
     import sounddevice as sd
 
     out = sys.stdout.buffer
-    pending: "queue.Queue[bytes]" = queue.Queue()
+    pending: queue.Queue[bytes] = queue.Queue()
 
     def _on_audio(indata, frames, time_info, status):
         if status:
             print(f"[audio capture] {status}", file=sys.stderr)
         pending.put(bytes(indata))
 
-    with sd.RawInputStream(samplerate=rate, blocksize=block, dtype="int16", channels=1,
-                           device=device, callback=_on_audio):
+    with sd.RawInputStream(
+        samplerate=rate,
+        blocksize=block,
+        dtype="int16",
+        channels=1,
+        device=device,
+        callback=_on_audio,
+    ):
         while True:
             data = pending.get()
             try:
@@ -520,16 +583,17 @@ def _demo() -> None:
     import sounddevice as sd
 
     print(sd.query_devices())
-    q: "queue.Queue[bytes]" = queue.Queue()
+    q: queue.Queue[bytes] = queue.Queue()
     with MicCapture(q, canceller=EchoCanceller.create("auto")):
         end = time.monotonic() + 5
         while time.monotonic() < end:
             frame = np.frombuffer(q.get(), dtype=np.int16).astype(np.float32)
-            level = float(np.sqrt(np.mean(frame ** 2))) / 32768
+            level = float(np.sqrt(np.mean(frame**2))) / 32768
             print("#" * int(level * 400), flush=True)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     parser = argparse.ArgumentParser()
     parser.add_argument("--capture", action="store_true")
     parser.add_argument("--rate", type=int, default=16000)

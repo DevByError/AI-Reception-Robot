@@ -49,6 +49,7 @@ Run this file directly to create the database and tables:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -60,6 +61,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 try:
     import mysql.connector
@@ -92,7 +95,7 @@ class DBConfig:
     database: str = DEFAULTS["database"]
 
     @classmethod
-    def from_env(cls, **overrides) -> "DBConfig":
+    def from_env(cls, **overrides) -> DBConfig:
         load_env_file()
         env = {
             "host": os.environ.get("LUC_DB_HOST", DEFAULTS["host"]),
@@ -223,6 +226,7 @@ SCHEMA_STATEMENTS = [
 
 # --- embedding serialization ------------------------------------------------------------------
 
+
 def encode_embedding(embedding) -> tuple[int, bytes]:
     """float32 little-endian raw bytes. float32 (not float64) because that is exactly what
     SFace produces - widening it would double the storage for zero extra precision."""
@@ -294,8 +298,11 @@ class RobotDatabase:
         """Connects with no database selected so the very first run doesn't require someone to
         have created the schema by hand in Workbench first."""
         conn = mysql.connector.connect(
-            host=self.config.host, port=self.config.port, user=self.config.user,
-            password=self.config.password, connection_timeout=10,
+            host=self.config.host,
+            port=self.config.port,
+            user=self.config.user,
+            password=self.config.password,
+            connection_timeout=10,
         )
         try:
             cur = conn.cursor()
@@ -401,9 +408,7 @@ class RobotDatabase:
             )
             people = cur.fetchall()
 
-            cur.execute(
-                "SELECT person_id, dim, vector FROM face_embeddings ORDER BY embedding_id"
-            )
+            cur.execute("SELECT person_id, dim, vector FROM face_embeddings ORDER BY embedding_id")
             vectors: dict[str, list] = {}
             for row in cur.fetchall():
                 vectors.setdefault(row["person_id"], []).append(
@@ -423,15 +428,28 @@ class RobotDatabase:
             for p in people
         ]
 
-    def insert_person(self, person_id: str, name: str, consent_given: bool,
-                      first_seen: float, last_seen: float, visit_count: int,
-                      embeddings: list) -> None:
+    def insert_person(
+        self,
+        person_id: str,
+        name: str,
+        consent_given: bool,
+        first_seen: float,
+        last_seen: float,
+        visit_count: int,
+        embeddings: list,
+    ) -> None:
         with self._cursor() as cur:
             cur.execute(
                 "INSERT INTO people (person_id, name, consent_given, first_seen, last_seen, "
                 "visit_count) VALUES (%s, %s, %s, %s, %s, %s)",
-                (person_id, name, int(consent_given), _to_utc(first_seen),
-                 _to_utc(last_seen), visit_count),
+                (
+                    person_id,
+                    name,
+                    int(consent_given),
+                    _to_utc(first_seen),
+                    _to_utc(last_seen),
+                    visit_count,
+                ),
             )
             self._insert_embeddings(cur, person_id, embeddings)
 
@@ -488,8 +506,9 @@ class RobotDatabase:
 
     # --- conversations ------------------------------------------------------------------------
 
-    def start_conversation(self, person_id: str | None = None,
-                           started_at: float | None = None) -> int:
+    def start_conversation(
+        self, person_id: str | None = None, started_at: float | None = None
+    ) -> int:
         with self._cursor() as cur:
             cur.execute(
                 "INSERT INTO conversations (person_id, started_at) VALUES (%s, %s)",
@@ -508,16 +527,29 @@ class RobotDatabase:
                 (person_id, conversation_id),
             )
 
-    def log_utterance(self, conversation_id: int, turn_index: int, speaker: str, text: str,
-                      intent: str | None = None, said_at: float | None = None) -> None:
+    def log_utterance(
+        self,
+        conversation_id: int,
+        turn_index: int,
+        speaker: str,
+        text: str,
+        intent: str | None = None,
+        said_at: float | None = None,
+    ) -> None:
         if speaker not in ("visitor", "robot"):
             raise ValueError("speaker must be 'visitor' or 'robot', got " + repr(speaker))
         with self._cursor() as cur:
             cur.execute(
                 "INSERT INTO utterances (conversation_id, turn_index, speaker, text, intent, "
                 "said_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                (conversation_id, turn_index, speaker, text, intent,
-                 _to_utc(said_at) if said_at else _utc_now()),
+                (
+                    conversation_id,
+                    turn_index,
+                    speaker,
+                    text,
+                    intent,
+                    _to_utc(said_at) if said_at else _utc_now(),
+                ),
             )
 
     def end_conversation(self, conversation_id: int, ended_at: float | None = None) -> None:
@@ -556,8 +588,9 @@ class RobotDatabase:
     # than friendly - one, occasionally two, is what a person does.
     MAX_FACTS_PER_PERSON = 12
 
-    def add_person_facts(self, person_id: str, facts: list[str],
-                         conversation_id: int | None = None) -> int:
+    def add_person_facts(
+        self, person_id: str, facts: list[str], conversation_id: int | None = None
+    ) -> int:
         """Stores newly-learned facts about someone, skipping any it already has.
 
         The duplicate check is a plain case-insensitive comparison against what is already
@@ -617,7 +650,8 @@ class RobotDatabase:
                     "fact": row["fact"],
                     "source_conversation_id": (
                         int(row["source_conversation_id"])
-                        if row["source_conversation_id"] is not None else None
+                        if row["source_conversation_id"] is not None
+                        else None
                     ),
                     "created_at": _from_utc(row["created_at"]),
                 }
@@ -637,9 +671,7 @@ class RobotDatabase:
         """The auto-expiry half of PRIVACY.md rule 3. Selects first so the caller can log/report
         exactly whose data went, instead of only a row count."""
         with self._cursor(dictionary=True) as cur:
-            cur.execute(
-                "SELECT person_id FROM people WHERE last_seen < %s", (_to_utc(cutoff),)
-            )
+            cur.execute("SELECT person_id FROM people WHERE last_seen < %s", (_to_utc(cutoff),))
             expired = [row["person_id"] for row in cur.fetchall()]
             if expired:
                 placeholders = ", ".join(["%s"] * len(expired))
@@ -652,8 +684,14 @@ class RobotDatabase:
     def counts(self) -> dict[str, int]:
         with self._cursor(dictionary=True) as cur:
             result = {}
-            for table in ("robot_identity", "people", "face_embeddings", "conversations",
-                          "utterances", "person_facts"):
+            for table in (
+                "robot_identity",
+                "people",
+                "face_embeddings",
+                "conversations",
+                "utterances",
+                "person_facts",
+            ):
                 cur.execute("SELECT COUNT(*) AS n FROM " + table)
                 result[table] = int(cur.fetchone()["n"])
             return result
@@ -711,8 +749,9 @@ SQLITE_FILE = PROJECT_ROOT / "data" / "robot_memory.db"
 sqlite3.register_adapter(datetime, lambda dt: dt.isoformat(sep=" "))
 sqlite3.register_converter("DATETIME", lambda raw: datetime.fromisoformat(raw.decode()))
 
-_UPSERT_RE = re.compile(r"ON DUPLICATE KEY UPDATE value = VALUES\(value\), "
-                        r"updated_at = VALUES\(updated_at\)")
+_UPSERT_RE = re.compile(
+    r"ON DUPLICATE KEY UPDATE value = VALUES\(value\), " r"updated_at = VALUES\(updated_at\)"
+)
 
 
 def _to_sqlite(sql: str) -> str:
@@ -720,8 +759,11 @@ def _to_sqlite(sql: str) -> str:
     other statement in this file is already plain SQL both understand (including the
     `LIMIT offset, count` form)."""
     sql = sql.replace("%s", "?").replace("INSERT IGNORE", "INSERT OR IGNORE")
-    return _UPSERT_RE.sub("ON CONFLICT(field) DO UPDATE SET value = excluded.value, "
-                          "updated_at = excluded.updated_at", sql)
+    return _UPSERT_RE.sub(
+        "ON CONFLICT(field) DO UPDATE SET value = excluded.value, "
+        "updated_at = excluded.updated_at",
+        sql,
+    )
 
 
 class _SQLiteCursor:
@@ -758,8 +800,12 @@ class SQLiteRobotDatabase(RobotDatabase):
     def connect(self, create_database: bool = False) -> None:
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path), detect_types=sqlite3.PARSE_DECLTYPES,
-                                     check_same_thread=False, timeout=10)
+        self._conn = sqlite3.connect(
+            str(self.path),
+            detect_types=sqlite3.PARSE_DECLTYPES,
+            check_same_thread=False,
+            timeout=10,
+        )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
@@ -803,7 +849,7 @@ def connect_or_none(verbose: bool = True, **overrides):
     load_env_file()
     backend = os.environ.get("LUC_DB_BACKEND", "auto").strip().lower() or "auto"
     if backend not in ("auto", "mysql", "sqlite"):
-        print(f"[db] LUC_DB_BACKEND={backend!r} is not auto/mysql/sqlite - using auto.")
+        log.info(f"[db] LUC_DB_BACKEND={backend!r} is not auto/mysql/sqlite - using auto.")
         backend = "auto"
 
     if backend in ("auto", "mysql"):
@@ -814,25 +860,31 @@ def connect_or_none(verbose: bool = True, **overrides):
         except MySQLError as exc:
             if backend == "mysql":
                 if verbose:
-                    print(f"[db] MySQL unavailable ({exc}) - running WITHOUT persistent memory "
-                          f"this session: faces enrolled now will be forgotten on exit, and no "
-                          f"conversation will be recorded. Check the server and the settings in "
-                          f".env, or set LUC_DB_BACKEND=auto to fall back to a local file.")
+                    log.warning(
+                        f"[db] MySQL unavailable ({exc}) - running WITHOUT persistent memory "
+                        f"this session: faces enrolled now will be forgotten on exit, and no "
+                        f"conversation will be recorded. Check the server and the settings in "
+                        f".env, or set LUC_DB_BACKEND=auto to fall back to a local file."
+                    )
                 return None
             if verbose:
-                print(f"[db] MySQL unavailable ({exc}) - using the local SQLite file "
-                      f"{SQLITE_FILE} instead (LUC_DB_BACKEND=auto).")
+                log.warning(
+                    f"[db] MySQL unavailable ({exc}) - using the local SQLite file "
+                    f"{SQLITE_FILE} instead (LUC_DB_BACKEND=auto)."
+                )
 
     try:
         db = SQLiteRobotDatabase(os.environ.get("LUC_DB_SQLITE_PATH") or None)
         db.ensure_schema()
         if verbose and backend == "sqlite":
-            print(f"[db] using the local SQLite file {db.path}")
+            log.info(f"[db] using the local SQLite file {db.path}")
         return db
     except Exception as exc:  # noqa: BLE001
         if verbose:
-            print(f"[db] could not open the SQLite file ({exc!r}) - running WITHOUT persistent "
-                  f"memory this session.")
+            log.warning(
+                f"[db] could not open the SQLite file ({exc!r}) - running WITHOUT persistent "
+                f"memory this session."
+            )
         return None
 
 
@@ -851,8 +903,7 @@ def self_test_round_trip(db: RobotDatabase) -> None:
     conv_id = db.start_conversation(person_id)
     db.log_utterance(conv_id, 0, "robot", "Welcome back, Self Test!")
     db.log_utterance(conv_id, 1, "visitor", "Where is the library?")
-    db.log_utterance(conv_id, 2, "robot", "It is on the second floor.",
-                     intent="GENERAL_INFO")
+    db.log_utterance(conv_id, 2, "robot", "It is on the second floor.", intent="GENERAL_INFO")
     db.end_conversation(conv_id)
 
     loaded = [p for p in db.load_people() if p["person_id"] == person_id]
@@ -875,39 +926,53 @@ def self_test_round_trip(db: RobotDatabase) -> None:
     )
     assert added == 2, f"expected 2 facts inserted, got {added}"
     # Same fact again (different case) must not accumulate a second row.
-    assert db.add_person_facts(person_id, ["prefers the January intake."]) == 0, \
-        "a duplicate fact was stored again - add_person_facts() is not de-duplicating"
+    assert (
+        db.add_person_facts(person_id, ["prefers the January intake."]) == 0
+    ), "a duplicate fact was stored again - add_person_facts() is not de-duplicating"
     facts = db.person_facts(person_id)
     assert len(facts) == 2, f"expected 2 facts back, got {len(facts)}"
-    assert facts[0]["source_conversation_id"] == conv_id, \
-        "a fact lost the conversation it came from - it can no longer be audited"
+    assert (
+        facts[0]["source_conversation_id"] == conv_id
+    ), "a fact lost the conversation it came from - it can no longer be audited"
     for row in facts:
         print(f"  remembered: {row['fact']!r}")
 
     assert db.delete_person(person_id), "delete_person() reported nothing deleted"
-    assert not db.recent_conversations(person_id), \
-        "the conversation outlived the person - ON DELETE CASCADE is not working"
-    assert not db.person_facts(person_id), \
-        "remembered facts outlived the person - the privacy cascade misses person_facts, " \
+    assert not db.recent_conversations(
+        person_id
+    ), "the conversation outlived the person - ON DELETE CASCADE is not working"
+    assert not db.person_facts(person_id), (
+        "remembered facts outlived the person - the privacy cascade misses person_facts, "
         "which is the most sensitive table of the set (free text about a real student)"
-    print("  cascade delete OK (person, embedding, conversation, transcript and remembered "
-          "facts all gone)")
+    )
+    print(
+        "  cascade delete OK (person, embedding, conversation, transcript and remembered "
+        "facts all gone)"
+    )
     print("\nOK: persistence, retrieval and the right-to-be-forgotten cascade all work.")
 
 
-
 if __name__ == "__main__":
-    db = (SQLiteRobotDatabase(os.environ.get("LUC_DB_SQLITE_PATH") or None)
-          if "--sqlite" in sys.argv else RobotDatabase())
-    where = (db.path if isinstance(db, SQLiteRobotDatabase) else
-             f"mysql://{db.config.user}@{db.config.host}:{db.config.port}/{db.config.database}")
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+    db = (
+        SQLiteRobotDatabase(os.environ.get("LUC_DB_SQLITE_PATH") or None)
+        if "--sqlite" in sys.argv
+        else RobotDatabase()
+    )
+    where = (
+        db.path
+        if isinstance(db, SQLiteRobotDatabase)
+        else f"mysql://{db.config.user}@{db.config.host}:{db.config.port}/{db.config.database}"
+    )
     print(f"Connecting to {where} ...")
     try:
         db.ensure_schema()
     except MySQLError as exc:
-        print(f"\nFAILED: {exc}\n\nSet the connection details in {ENV_FILE} (copy "
-              f"{PROJECT_ROOT / '.env.example'}), or via LUC_DB_* environment variables - or "
-              f"run with --sqlite to use the local file instead.")
+        print(
+            f"\nFAILED: {exc}\n\nSet the connection details in {ENV_FILE} (copy "
+            f"{PROJECT_ROOT / '.env.example'}), or via LUC_DB_* environment variables - or "
+            f"run with --sqlite to use the local file instead."
+        )
         sys.exit(1)
 
     print("OK: database and tables are ready.")

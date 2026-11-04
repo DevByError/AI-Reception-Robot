@@ -38,6 +38,9 @@ re-run.
 
 from __future__ import annotations
 
+import logging
+import sys
+
 from dialogue_manager_live import SAMPLE_CHUNKS
 from knowledge_base import KnowledgeBase, KnowledgeChunk
 
@@ -160,8 +163,10 @@ def main() -> None:
         top_id = scores[0][2].chunk_id if scores else "(none)"
         top_raw = scores[0][0] if scores else 0.0
         top_ranked = scores[0][1] if scores else 0.0
-        print(f"{query[:43]:<45} {str(expected):<22} {top_id:<22} {top_raw:>7.3f} "
-              f"{top_ranked:>7.3f}")
+        print(
+            f"{query[:43]:<45} {str(expected):<22} {top_id:<22} {top_raw:>7.3f} "
+            f"{top_ranked:>7.3f}"
+        )
         if expected is not None and top_id != expected and top_id.startswith("adversarial-"):
             adversarial_wins.append((query, expected, top_id))
 
@@ -172,19 +177,27 @@ def main() -> None:
     # can't fix a wrong chunk winning, only whether a match happens at all.
     print()
     if adversarial_wins:
-        print("WARNING: an adversarial (fake-scraped-content) chunk outranked the real directory "
-              "answer for these queries - DIRECTORY_BOOST (dialogue_manager_live.py) needs to go "
-              "up:")
+        print(
+            "WARNING: an adversarial (fake-scraped-content) chunk outranked the real directory "
+            "answer for these queries - DIRECTORY_BOOST (dialogue_manager_live.py) needs to go "
+            "up:"
+        )
         for query, expected, top_id in adversarial_wins:
             print(f"  {query!r}: expected {expected!r}, got {top_id!r}")
     else:
-        print("OK: the directory answer beat every adversarial chunk for every query that "
-              "should match it - DIRECTORY_BOOST is currently sufficient against this test set.")
+        print(
+            "OK: the directory answer beat every adversarial chunk for every query that "
+            "should match it - DIRECTORY_BOOST is currently sufficient against this test set."
+        )
 
-    print(f"\nSweeping candidate thresholds (current threshold for "
-          f"{kb.embedding_model!r} = {current_threshold})...\n")
-    print(f"{'threshold':>9}  {'correct positives':>18}  "
-          f"{'false positives (negatives wrongly matched)':>36}")
+    print(
+        f"\nSweeping candidate thresholds (current threshold for "
+        f"{kb.embedding_model!r} = {current_threshold})...\n"
+    )
+    print(
+        f"{'threshold':>9}  {'correct positives':>18}  "
+        f"{'false positives (negatives wrongly matched)':>36}"
+    )
     print("-" * 70)
 
     best_threshold = None
@@ -194,7 +207,7 @@ def main() -> None:
         total_positive = 0
         false_positive = 0
         total_negative = 0
-        for query, expected, scores in all_scores:
+        for _query, expected, scores in all_scores:
             # Exactly what search() does: threshold the RAW similarity, keep the boosted order.
             matched = [c for raw, _, c in scores if raw >= threshold]
             if expected is not None:
@@ -216,11 +229,15 @@ def main() -> None:
             best_score = combined
             best_threshold = threshold
             marker = "  <- best so far"
-        print(f"{threshold:>9.3f}  {correct_positive:>6}/{total_positive:<10}  "
-              f"{false_positive:>6}/{total_negative:<10}{marker}")
+        print(
+            f"{threshold:>9.3f}  {correct_positive:>6}/{total_positive:<10}  "
+            f"{false_positive:>6}/{total_negative:<10}{marker}"
+        )
 
-    print(f"\nSuggested threshold for {kb.embedding_model!r}: {best_threshold} "
-          f"(currently in use: {current_threshold})")
+    print(
+        f"\nSuggested threshold for {kb.embedding_model!r}: {best_threshold} "
+        f"(currently in use: {current_threshold})"
+    )
     if best_threshold != current_threshold:
         print(
             "These differ - put the measured value into SIMILARITY_THRESHOLDS in "
@@ -240,4 +257,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     main()

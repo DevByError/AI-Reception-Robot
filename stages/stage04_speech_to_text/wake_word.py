@@ -15,15 +15,18 @@ file, or set OWW_MODEL=hey_jarvis to try it with a stock phrase first.
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 import numpy as np
 
+log = logging.getLogger(__name__)
+
 sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
 from model_paths import OWW_DIR  # noqa: E402
 
-CHUNK = 1280   # openWakeWord works on 80ms blocks of 16kHz audio
+CHUNK = 1280  # openWakeWord works on 80ms blocks of 16kHz audio
 
 
 def _resolve_model(spec: str) -> Path:
@@ -32,8 +35,10 @@ def _resolve_model(spec: str) -> Path:
         return path
     for candidate in sorted(OWW_DIR.glob(f"{spec}*.onnx")):
         return candidate
-    raise FileNotFoundError(f"wake word model {spec!r} not found (looked in {OWW_DIR}) - set "
-                            f"OWW_MODEL to a .onnx file")
+    raise FileNotFoundError(
+        f"wake word model {spec!r} not found (looked in {OWW_DIR}) - set "
+        f"OWW_MODEL to a .onnx file"
+    )
 
 
 class OpenWakeWordDetector:
@@ -44,7 +49,8 @@ class OpenWakeWordDetector:
             raise ValueError("OWW_MODEL is not set")
         path = _resolve_model(model)
         self._model = Model(
-            wakeword_models=[str(path)], inference_framework="onnx",
+            wakeword_models=[str(path)],
+            inference_framework="onnx",
             melspec_model_path=str(OWW_DIR / "melspectrogram.onnx"),
             embedding_model_path=str(OWW_DIR / "embedding_model.onnx"),
         )
@@ -75,8 +81,10 @@ def create_detector(engine: str, model: str, threshold: float) -> OpenWakeWordDe
     try:
         detector = OpenWakeWordDetector(model, threshold)
     except Exception as exc:  # noqa: BLE001
-        print(f"[wake] openWakeWord unavailable ({exc}) - the name still works when spoken "
-              f"during a conversation.")
+        log.warning(
+            f"[wake] openWakeWord unavailable ({exc}) - the name still works when spoken "
+            f"during a conversation."
+        )
         return None
-    print(f"[wake] listening for the wake word '{detector.name}' (openWakeWord)")
+    log.info(f"[wake] listening for the wake word '{detector.name}' (openWakeWord)")
     return detector

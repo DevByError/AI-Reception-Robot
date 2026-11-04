@@ -26,7 +26,6 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
 from model_paths import ZIPFORMER_DIR  # noqa: E402
-
 from stt_listener import TranscriptChunk  # noqa: E402
 
 SAMPLE_RATE = 16000
@@ -74,8 +73,9 @@ def _ensure_bpe_vocab(model_dir: Path) -> Path | None:
 def _first(pattern: str, folder: Path) -> str:
     matches = sorted(folder.glob(pattern))
     if not matches:
-        raise FileNotFoundError(f"no {pattern} in {folder} - run "
-                                f"python stages/stage00_setup/download_models.py")
+        raise FileNotFoundError(
+            f"no {pattern} in {folder} - run " f"python stages/stage00_setup/download_models.py"
+        )
     return str(matches[0])
 
 
@@ -84,8 +84,13 @@ def _rms(x: np.ndarray) -> float:
 
 
 class SherpaSTTEngine:
-    def __init__(self, model_dir: Path = ZIPFORMER_DIR, threads: int = 2,
-                 hotwords: str | None = None, **_ignored):
+    def __init__(
+        self,
+        model_dir: Path = ZIPFORMER_DIR,
+        threads: int = 2,
+        hotwords: str | None = None,
+        **_ignored,
+    ):
         import sherpa_onnx
 
         model_dir = Path(model_dir)
@@ -101,7 +106,7 @@ class SherpaSTTEngine:
         self.hotwords: str | None = None
         self._recognizer = None
         self.set_hotwords(hotwords)
-        self.last_confidence = None      # the Zipformer gives no per-word confidence
+        self.last_confidence = None  # the Zipformer gives no per-word confidence
         self.device = "cpu"
         self._stream = None
         self._first_chunk: bytes | None = None
@@ -112,16 +117,26 @@ class SherpaSTTEngine:
         """Hotword biasing needs modified beam search and the model's BPE vocabulary; without
         those, decoding stays greedy (fastest) and the hotwords are simply not used."""
         self.hotwords = (hotwords or "").strip() or None
-        kwargs = dict(self._files, num_threads=self._threads, sample_rate=SAMPLE_RATE,
-                      feature_dim=80, decoding_method="greedy_search")
+        kwargs = dict(
+            self._files,
+            num_threads=self._threads,
+            sample_rate=SAMPLE_RATE,
+            feature_dim=80,
+            decoding_method="greedy_search",
+        )
         if self.hotwords and self._bpe is not None:
             words = "\n".join(w.strip().upper() for w in self.hotwords.split(",") if w.strip())
             hotwords_file = Path(self._files["tokens"]).with_name("_hotwords.txt")
             try:
                 hotwords_file.write_text(words, encoding="utf-8")
-                kwargs.update(decoding_method="modified_beam_search", max_active_paths=4,
-                              hotwords_file=str(hotwords_file), hotwords_score=HOTWORDS_SCORE,
-                              modeling_unit="bpe", bpe_vocab=str(self._bpe))
+                kwargs.update(
+                    decoding_method="modified_beam_search",
+                    max_active_paths=4,
+                    hotwords_file=str(hotwords_file),
+                    hotwords_score=HOTWORDS_SCORE,
+                    modeling_unit="bpe",
+                    bpe_vocab=str(self._bpe),
+                )
             except OSError:
                 pass
         self._recognizer = self._sherpa.OnlineRecognizer.from_transducer(**kwargs)
@@ -130,17 +145,20 @@ class SherpaSTTEngine:
     def transcribe_stream(self, audio_chunks: list[bytes], locale: str) -> list[TranscriptChunk]:
         if not audio_chunks:
             return [TranscriptChunk(text="", is_final=True)]
-        same_utterance = (self._stream is not None and audio_chunks[0] is self._first_chunk
-                          and len(audio_chunks) >= self._fed)
+        same_utterance = (
+            self._stream is not None
+            and audio_chunks[0] is self._first_chunk
+            and len(audio_chunks) >= self._fed
+        )
         if not same_utterance:
             self._stream = self._recognizer.create_stream()
             self._first_chunk = audio_chunks[0]
             self._fed = 0
             self._peak = 0.0
-        fresh = audio_chunks[self._fed:]
+        fresh = audio_chunks[self._fed :]
         self._fed = len(audio_chunks)
         if fresh:
-            for chunk in fresh:   # the loudest 30ms so far = this utterance's speech level
+            for chunk in fresh:  # the loudest 30ms so far = this utterance's speech level
                 self._peak = max(self._peak, _rms(np.frombuffer(chunk, np.int16) / 32768.0))
             samples = np.frombuffer(b"".join(fresh), dtype=np.int16).astype(np.float32) / 32768.0
             self._stream.accept_waveform(SAMPLE_RATE, samples)
@@ -150,7 +168,8 @@ class SherpaSTTEngine:
             tail = np.frombuffer(b"".join(audio_chunks[-8:]), dtype=np.int16) / 32768.0
             if tail.size and _rms(tail) < max(QUIET_RMS, QUIET_FRACTION * self._peak):
                 self._stream.accept_waveform(
-                    SAMPLE_RATE, np.zeros(int(TAIL_PADDING_S * SAMPLE_RATE), np.float32))
+                    SAMPLE_RATE, np.zeros(int(TAIL_PADDING_S * SAMPLE_RATE), np.float32)
+                )
             while self._recognizer.is_ready(self._stream):
                 self._recognizer.decode_stream(self._stream)
         text = self._recognizer.get_result(self._stream)
@@ -166,6 +185,6 @@ if __name__ == "__main__":
     for path in sys.argv[1:]:
         data, rate = sf.read(path, dtype="int16")
         data = data[:, 0] if data.ndim > 1 else data
-        frames = [data[i:i + 480].tobytes() for i in range(0, data.size, 480)]
+        frames = [data[i : i + 480].tobytes() for i in range(0, data.size, 480)]
         frames += [bytes(960)] * 10
         print(engine.transcribe_stream(frames, "en-US")[0].text, "|", path)

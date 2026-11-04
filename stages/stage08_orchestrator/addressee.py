@@ -88,6 +88,7 @@ class LipHistory:
 
 # --- the wake word -----------------------------------------------------------------------------
 
+
 def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]", " ", text.lower())).strip()
 
@@ -125,19 +126,25 @@ def find_wake_word(text: str | None, phrases: list[str]) -> tuple[bool, str]:
 
 # --- the decision ---------------------------------------------------------------------------------
 
+
 @dataclass
 class Decision:
     addressed: bool
     reason: str
-    question: str          # the text to answer (wake word removed)
+    question: str  # the text to answer (wake word removed)
 
 
 class AddresseeJudge:
     """Holds the policy settings and the ignored-in-a-row counter for one robot."""
 
-    def __init__(self, mode: str = "auto", min_lip_fraction: float = 0.25,
-                 min_facing_fraction: float = 0.5, max_ignored: int = 2,
-                 wake: list[str] | None = None):
+    def __init__(
+        self,
+        mode: str = "auto",
+        min_lip_fraction: float = 0.25,
+        min_facing_fraction: float = 0.5,
+        max_ignored: int = 2,
+        wake: list[str] | None = None,
+    ):
         self.mode = mode
         self.min_lip_fraction = min_lip_fraction
         self.min_facing_fraction = min_facing_fraction
@@ -156,8 +163,12 @@ class AddresseeJudge:
             self.ignored_in_a_row += 1
             if self.ignored_in_a_row > self.max_ignored:
                 self.ignored_in_a_row = 0
-                return Decision(True, f"accepted anyway after {self.max_ignored} ignored in a "
-                                      f"row ({decision.reason})", decision.question)
+                return Decision(
+                    True,
+                    f"accepted anyway after {self.max_ignored} ignored in a "
+                    f"row ({decision.reason})",
+                    decision.question,
+                )
         return decision
 
     def _decide(self, text, frames, faces) -> Decision:
@@ -171,27 +182,40 @@ class AddresseeJudge:
         visible = [f for f in faces if f.frames > 0]
         if frames == 0 or not visible:
             if self.mode == "strict":
-                return Decision(False, "no face evidence and no wake word (strict mode)",
-                                question)
+                return Decision(False, "no face evidence and no wake word (strict mode)", question)
             return Decision(True, "no face evidence - answering", question)
 
         facing = [f for f in visible if f.facing_fraction >= self.min_facing_fraction]
         talking_to_me = [f for f in facing if f.speaking_fraction >= self.min_lip_fraction]
         if talking_to_me:
             best = max(talking_to_me, key=lambda f: f.speaking_fraction)
-            return Decision(True, f"face {best.face_id} facing the robot with lips moving "
-                                  f"{best.speaking_fraction:.0%} of the time", question)
+            return Decision(
+                True,
+                f"face {best.face_id} facing the robot with lips moving "
+                f"{best.speaking_fraction:.0%} of the time",
+                question,
+            )
 
         # One person, looking at the robot, a little lip movement: the lip detector is weakest
         # exactly here (small face, soft speaker), and a robot that ignores the only person in
         # front of it is the worst failure - so a lower bar applies.
-        if (len(visible) == 1 and facing
-                and facing[0].speaking_fraction >= self.min_lip_fraction / 3):
+        if (
+            len(visible) == 1
+            and facing
+            and facing[0].speaking_fraction >= self.min_lip_fraction / 3
+        ):
             return Decision(True, "only visitor, facing the robot, some lip movement", question)
 
         talking_elsewhere = [f for f in visible if f.speaking_fraction >= self.min_lip_fraction]
         if talking_elsewhere:
-            return Decision(False, "the person talking was not facing the robot - probably "
-                                   "talking to someone else", question)
-        return Decision(False, "nobody facing the robot was moving their lips - the voice came "
-                               "from someone else or off camera", question)
+            return Decision(
+                False,
+                "the person talking was not facing the robot - probably " "talking to someone else",
+                question,
+            )
+        return Decision(
+            False,
+            "nobody facing the robot was moving their lips - the voice came "
+            "from someone else or off camera",
+            question,
+        )

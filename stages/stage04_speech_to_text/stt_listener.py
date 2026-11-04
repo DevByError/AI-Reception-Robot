@@ -5,11 +5,9 @@ Goal: after the greeting, record audio and convert it to text quickly, with Voic
 Detection (VAD) to know when the person finished speaking. Language for this first stage:
 English only (locale is extensible for later).
 
-TODO (real implementation later):
-  - replace MockSTTEngine with Whisper (local, streaming) or a cloud STT streaming service.
-  - add real VAD (e.g. webrtcvad or silero-vad) instead of the fake threshold below.
-  - locale: passed on every call so we can add Arabic/Chinese later without changing the
-    interface.
+This file holds the interfaces and mocks used by the self-tests. The real listener (Whisper,
+webrtcvad, end-of-turn detection) is stt_listener_live.py. The locale is passed on every call so
+other languages can be added without changing the interface.
 """
 
 from __future__ import annotations
@@ -21,13 +19,14 @@ from typing import Protocol
 @dataclass
 class TranscriptChunk:
     text: str
-    is_final: bool   # False = a partial result while still speaking (streaming), True = the
-                      # sentence is complete
+    is_final: bool  # False = a partial result while still speaking (streaming), True = the
+    # sentence is complete
 
 
 class STTEngine(Protocol):
-    def transcribe_stream(self, audio_chunks: list[bytes], locale: str) -> list[TranscriptChunk]:
-        ...
+    def transcribe_stream(
+        self, audio_chunks: list[bytes], locale: str
+    ) -> list[TranscriptChunk]: ...
 
 
 class MockSTTEngine:

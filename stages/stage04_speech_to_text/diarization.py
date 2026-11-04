@@ -33,15 +33,16 @@ OVERLAP = 0.5
 
 @dataclass
 class SpeakerSegment:
-    speaker: str        # "speaker_0", "speaker_1", ... - a cluster label, not a real identity
-                         # (that linkage, if ever wanted, is a Stage 02 face-memory question,
-                         # not this module's job)
+    speaker: str  # "speaker_0", "speaker_1", ... - a cluster label, not a real identity
+    # (that linkage, if ever wanted, is a Stage 02 face-memory question,
+    # not this module's job)
     start_s: float
     end_s: float
 
 
-def diarize(audio: np.ndarray, sample_rate: int,
-            num_speakers: int | None = None) -> list[SpeakerSegment]:
+def diarize(
+    audio: np.ndarray, sample_rate: int, num_speakers: int | None = None
+) -> list[SpeakerSegment]:
     """Splits `audio` into overlapping windows, embeds each with resemblyzer, clusters the
     embeddings, and collapses consecutive same-cluster windows into contiguous segments.
 
@@ -55,7 +56,10 @@ def diarize(audio: np.ndarray, sample_rate: int,
     wav = preprocess_wav(audio, source_sr=sample_rate)
     encoder = VoiceEncoder()
     _, embeds, slices = encoder.embed_utterance(
-        wav, return_partials=True, rate=1 / (WINDOW_S * (1 - OVERLAP)), min_coverage=0.5,
+        wav,
+        return_partials=True,
+        rate=1 / (WINDOW_S * (1 - OVERLAP)),
+        min_coverage=0.5,
     )
 
     if len(embeds) < 2:
@@ -63,7 +67,7 @@ def diarize(audio: np.ndarray, sample_rate: int,
         return [SpeakerSegment(speaker="speaker_0", start_s=0.0, end_s=len(audio) / sample_rate)]
 
     n_clusters = num_speakers or min(len(embeds), 4)  # small default cap without a headcount
-                                                        # hint, rather than one cluster per window
+    # hint, rather than one cluster per window
     labels = AgglomerativeClustering(n_clusters=n_clusters).fit_predict(embeds)
 
     segments: list[SpeakerSegment] = []

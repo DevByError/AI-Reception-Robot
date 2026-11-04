@@ -34,18 +34,22 @@ class _Groq:
     """Stands in for requests.Session: records each call and answers with `reply`."""
 
     def __init__(self, reply=None, delay_s=0.0, error=None, models=("whisper-large-v3",)):
-        self.reply = reply or _Resp(200, {
-            "text": " What time does the library close? ",
-            "segments": [{"avg_logprob": -0.1, "no_speech_prob": 0.01}],
-        })
+        self.reply = reply or _Resp(
+            200,
+            {
+                "text": " What time does the library close? ",
+                "segments": [{"avg_logprob": -0.1, "no_speech_prob": 0.01}],
+            },
+        )
         self.delay_s = delay_s
         self.error = error
         self.models = models
         self.posts: list[dict] = []
 
     def post(self, url, headers=None, files=None, data=None, timeout=None):
-        self.posts.append({"url": url, "headers": headers, "files": files, "data": data,
-                           "timeout": timeout})
+        self.posts.append(
+            {"url": url, "headers": headers, "files": files, "data": data, "timeout": timeout}
+        )
         if self.delay_s:
             time.sleep(self.delay_s)
         if self.error:
@@ -83,9 +87,14 @@ class _Clock:
 
 def _engine(http, local=None, clock=None, timeout_s=3.0):
     cloud = stt_cloud.GroqTranscriber(FAKE_KEY, timeout_s=timeout_s, http=http)
-    return stt_cloud.CloudFinalEngine(local or _Local(), cloud, stt.ConfidenceReport,
-                                      stt.TranscriptChunk, log_transcripts=True,
-                                      clock=clock or time.monotonic)
+    return stt_cloud.CloudFinalEngine(
+        local or _Local(),
+        cloud,
+        stt.ConfidenceReport,
+        stt.TranscriptChunk,
+        log_transcripts=True,
+        clock=clock or time.monotonic,
+    )
 
 
 AUDIO = [b"\x10\x00" * stt.FRAME_SAMPLES] * 10
@@ -94,7 +103,8 @@ AUDIO = [b"\x10\x00" * stt.FRAME_SAMPLES] * 10
 def test_sends_one_wav_with_the_model_language_and_prompt():
     http = _Groq()
     text, avg_prob, no_speech = stt_cloud.GroqTranscriber(FAKE_KEY, http=http).transcribe(
-        b"".join(AUDIO), "en", "Lincoln University College")
+        b"".join(AUDIO), "en", "Lincoln University College"
+    )
     assert text == "What time does the library close?"
     assert avg_prob == pytest.approx(np.exp(-0.1))
     assert no_speech == pytest.approx(0.01)
@@ -124,7 +134,8 @@ def test_no_key_is_refused_up_front():
         stt_cloud.GroqTranscriber("")
 
 
-def test_the_finished_question_comes_from_groq(capsys):
+def test_the_finished_question_comes_from_groq(caplog):
+    caplog.set_level("INFO")
     local = _Local()
     engine = _engine(_Groq(), local)
     chunks = engine.transcribe_final(AUDIO, "en-US")
@@ -132,8 +143,8 @@ def test_the_finished_question_comes_from_groq(capsys):
     assert chunks[-1].is_final
     assert engine.last_source == "Groq"
     assert engine.last_confidence.is_reliable
-    assert local.calls == 1                    # the backup was ready too
-    assert 'the local Whisper heard "what time does the library clothes"' in capsys.readouterr().out
+    assert local.calls == 1  # the backup was ready too
+    assert 'the local Whisper heard "what time does the library clothes"' in caplog.text
 
 
 def test_partials_never_leave_the_robot():
@@ -150,24 +161,26 @@ def test_wrapper_passes_everything_else_to_the_local_engine():
     assert engine.hotwords.startswith("Lincoln")
 
 
-def test_bad_key_falls_back_to_local_and_rests(capsys):
+def test_bad_key_falls_back_to_local_and_rests(caplog):
+    caplog.set_level("INFO")
     clock = _Clock()
     http = _Groq(reply=_Resp(401, text='{"error": "Invalid API Key"}'))
     engine = _engine(http, clock=clock)
     assert engine.transcribe_final(AUDIO, "en-US")[-1].text == "what time does the library clothes"
-    out = capsys.readouterr().out
+    out = caplog.text
     assert "check GROQ_API_KEY" in out and FAKE_KEY not in out
     assert engine.last_source == "local"
     clock.now += stt_cloud.REST_AFTER_BAD_KEY_S - 1
     engine.transcribe_final(AUDIO, "en-US")
-    assert len(http.posts) == 1                # left alone while resting
+    assert len(http.posts) == 1  # left alone while resting
     clock.now += 2
     engine.transcribe_final(AUDIO, "en-US")
-    assert len(http.posts) == 2                # and tried again after
+    assert len(http.posts) == 2  # and tried again after
 
 
-@pytest.mark.parametrize("status, rest", [(429, stt_cloud.REST_AFTER_QUOTA_S),
-                                          (503, stt_cloud.REST_AFTER_FAILURE_S)])
+@pytest.mark.parametrize(
+    "status, rest", [(429, stt_cloud.REST_AFTER_QUOTA_S), (503, stt_cloud.REST_AFTER_FAILURE_S)]
+)
 def test_quota_and_outages_rest_for_less_time(status, rest):
     clock = _Clock()
     engine = _engine(_Groq(reply=_Resp(status, text="busy")), clock=clock)
@@ -181,34 +194,42 @@ def test_no_network_falls_back_to_local():
     assert engine.last_source == "local"
 
 
-def test_a_slow_groq_is_not_waited_for(capsys):
+def test_a_slow_groq_is_not_waited_for(caplog):
+    caplog.set_level("INFO")
     engine = _engine(_Groq(delay_s=2.0), timeout_s=0.5)
     started = time.monotonic()
     text = engine.transcribe_final(AUDIO, "en-US")[-1].text
     took = time.monotonic() - started
     assert text == "what time does the library clothes"
     assert took < 1.5, f"waited {took:.1f}s for a cloud answer capped at 0.5s"
-    assert "no answer within 0.5s" in capsys.readouterr().out
+    assert "no answer within 0.5s" in caplog.text
 
 
 def test_invented_words_on_a_silent_clip_are_dropped():
-    reply = _Resp(200, {"text": "Thank you.",
-                        "segments": [{"avg_logprob": -0.3, "no_speech_prob": 0.7}]})
+    reply = _Resp(
+        200, {"text": "Thank you.", "segments": [{"avg_logprob": -0.3, "no_speech_prob": 0.7}]}
+    )
     engine = _engine(_Groq(reply=reply), _Local(text=""))
     assert engine.transcribe_final(AUDIO, "en-US")[-1].text == ""
     assert engine.last_source == "local"
 
 
 def test_clear_speech_the_local_model_missed_is_kept():
-    reply = _Resp(200, {"text": "Hello Nova.",
-                        "segments": [{"avg_logprob": -0.2, "no_speech_prob": 0.05}]})
+    reply = _Resp(
+        200, {"text": "Hello Nova.", "segments": [{"avg_logprob": -0.2, "no_speech_prob": 0.05}]}
+    )
     engine = _engine(_Groq(reply=reply), _Local(text="[??]"))
     assert engine.transcribe_final(AUDIO, "en-US")[-1].text == "Hello Nova."
 
 
 def test_an_unsure_cloud_answer_loses_to_the_local_one():
-    reply = _Resp(200, {"text": "Wear is the engine ear in?",
-                        "segments": [{"avg_logprob": -1.6, "no_speech_prob": 0.05}]})
+    reply = _Resp(
+        200,
+        {
+            "text": "Wear is the engine ear in?",
+            "segments": [{"avg_logprob": -1.6, "no_speech_prob": 0.05}],
+        },
+    )
     engine = _engine(_Groq(reply=reply), _Local(text="where is engineering"))
     assert engine.transcribe_final(AUDIO, "en-US")[-1].text == "where is engineering"
 
@@ -222,7 +243,8 @@ def test_prompt_carries_the_names_and_stays_short():
     assert not prompt.endswith(",")
 
 
-def test_startup_check_reports_a_wrong_model(capsys):
+def test_startup_check_reports_a_wrong_model(caplog):
+    caplog.set_level("INFO")
     clock = _Clock()
     engine = _engine(_Groq(models=("whisper-large-v3-turbo",)), clock=clock)
     engine.cloud.model = "whisper-large-v9"
@@ -231,11 +253,12 @@ def test_startup_check_reports_a_wrong_model(capsys):
         if engine._resting_until:
             break
         time.sleep(0.01)
-    assert "GROQ_STT_MODEL" in capsys.readouterr().out
+    assert "GROQ_STT_MODEL" in caplog.text
     assert engine._resting_until > clock.now
 
 
 # --- the listener uses it for the finished question -----------------------------------------
+
 
 class _CloudStandIn:
     last_confidence = None
@@ -263,13 +286,22 @@ def _frames(amplitude, n):
 
 
 def _listen(engine, frames):
-    q: "queue.Queue[bytes]" = queue.Queue()
+    q: queue.Queue[bytes] = queue.Queue()
     for f in frames:
         q.put(f)
     result: list = []
-    worker = threading.Thread(target=lambda: result.append(stt.listen_for_one_utterance(
-        engine, stt.STTListener(engine, stt.PatientVAD(), locale="en-US"), _LoudIsSpeech(), q,
-        timeout_s=5.0)), daemon=True)
+    worker = threading.Thread(
+        target=lambda: result.append(
+            stt.listen_for_one_utterance(
+                engine,
+                stt.STTListener(engine, stt.PatientVAD(), locale="en-US"),
+                _LoudIsSpeech(),
+                q,
+                timeout_s=5.0,
+            )
+        ),
+        daemon=True,
+    )
     worker.start()
     worker.join(timeout=20)
     assert result, "the turn never ended"
@@ -294,12 +326,13 @@ def test_listener_takes_the_cloud_words_when_the_partials_stop_changing(monkeypa
     monkeypatch.setattr(stt, "MIN_UTTERANCE_MS", 0)
     monkeypatch.setattr(stt, "VOICE_GATE_DB", 0.0)
     engine = _CloudStandIn()
-    text = _listen(engine, _frames(8000, 400))     # never goes quiet: only the words can end it
+    text = _listen(engine, _frames(8000, 400))  # never goes quiet: only the words can end it
     assert text == "Where is the library?"
     assert engine.finals == 1
 
 
 # --- build_stt_engine -----------------------------------------------------------------------
+
 
 class _FakeWhisper(_Local):
     def __init__(self, **kwargs):

@@ -102,9 +102,18 @@ if __name__ == "__main__":
     # are secrets, and a helper that prints a password to the terminal on request would undo
     # that in one command.
     known = [
-        "LUC_DB_HOST", "LUC_DB_PORT", "LUC_DB_USER", "LUC_DB_PASSWORD", "LUC_DB_NAME",
-        "LUC_OLLAMA_HOST", "LUC_OLLAMA_CHAT_MODEL", "LUC_OLLAMA_EMBED_MODEL",
-        "LUC_EMBEDDING_BACKEND", "GEMINI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY",
+        "LUC_DB_HOST",
+        "LUC_DB_PORT",
+        "LUC_DB_USER",
+        "LUC_DB_PASSWORD",
+        "LUC_DB_NAME",
+        "LUC_OLLAMA_HOST",
+        "LUC_OLLAMA_CHAT_MODEL",
+        "LUC_OLLAMA_EMBED_MODEL",
+        "LUC_EMBEDDING_BACKEND",
+        "GEMINI_API_KEY",
+        "GROQ_API_KEY",
+        "ANTHROPIC_API_KEY",
     ]
     print("\nSettings this project reads (value hidden - only whether it is set):")
     for name in known:

@@ -39,8 +39,8 @@ DETECTION_SCORE_THRESHOLD = 0.7  # YuNet's own confidence threshold for "this is
 #
 # So quality is measured once, at detection, and callers decide what they are willing to use it
 # for - see FaceDetection.is_usable / is_enrollable below.
-MIN_FACE_WIDTH_PX = 60      # smaller than this and SFace is working from too few real pixels
-MIN_BLUR_VARIANCE = 40.0    # variance of the Laplacian - the standard cheap sharpness measure
+MIN_FACE_WIDTH_PX = 60  # smaller than this and SFace is working from too few real pixels
+MIN_BLUR_VARIANCE = 40.0  # variance of the Laplacian - the standard cheap sharpness measure
 # Enrolling is held to a higher standard than matching: a stored sample is compared against for
 # months, so it is worth waiting a few frames for a good one.
 MIN_ENROLL_FACE_WIDTH_PX = 90
@@ -63,7 +63,7 @@ def blur_variance(gray_crop: np.ndarray) -> float:
 @dataclass
 class FaceDetection:
     bbox: tuple[int, int, int, int]  # x, y, w, h
-    embedding: np.ndarray            # 128-d SFace feature vector
+    embedding: np.ndarray  # 128-d SFace feature vector
     # YuNet's own confidence that this is a face at all. Was being discarded before - it is
     # already computed, and it is one of the three cheap signals that say whether this embedding
     # can be trusted.
@@ -104,14 +104,15 @@ class FaceDetection:
         if self.width < MIN_FACE_WIDTH_PX:
             problems.append(f"too small ({self.width}px wide, need {MIN_FACE_WIDTH_PX})")
         if self.sharpness < MIN_BLUR_VARIANCE:
-            problems.append(f"too blurry (sharpness {self.sharpness:.0f}, "
-                            f"need {MIN_BLUR_VARIANCE:.0f})")
+            problems.append(
+                f"too blurry (sharpness {self.sharpness:.0f}, " f"need {MIN_BLUR_VARIANCE:.0f})"
+            )
         if self.score < DETECTION_SCORE_THRESHOLD:
             problems.append(f"low detector confidence ({self.score:.2f})")
         return ", ".join(problems)
 
 
-REFINE_CROP = 1.6   # crop side for describe_faces(), as a multiple of the face box's longer side
+REFINE_CROP = 1.6  # crop side for describe_faces(), as a multiple of the face box's longer side
 
 
 class SFaceEmbedder:
@@ -122,7 +123,10 @@ class SFaceEmbedder:
                 "stages/stage02_face_recognition first."
             )
         self.detector = cv2.FaceDetectorYN.create(
-            str(DETECTION_MODEL), "", frame_size, score_threshold=DETECTION_SCORE_THRESHOLD,
+            str(DETECTION_MODEL),
+            "",
+            frame_size,
+            score_threshold=DETECTION_SCORE_THRESHOLD,
         )
         self.recognizer = cv2.FaceRecognizerSF.create(str(RECOGNITION_MODEL), "")
         self._last_size = frame_size
@@ -206,18 +210,22 @@ class SFaceEmbedder:
 
             # YuNet's row layout: [x, y, w, h, 5x(lx, ly), score] - 15 values. The landmarks and
             # the score were both being thrown away.
-            landmarks = tuple(
-                (int(face_row[4 + i * 2]), int(face_row[5 + i * 2])) for i in range(5)
-            ) if len(face_row) >= 14 else ()
+            landmarks = (
+                tuple((int(face_row[4 + i * 2]), int(face_row[5 + i * 2])) for i in range(5))
+                if len(face_row) >= 14
+                else ()
+            )
             score = float(face_row[14]) if len(face_row) >= 15 else 1.0
 
-            results.append(FaceDetection(
-                bbox=(int(x), int(y), int(fw), int(fh)),
-                embedding=embedding,
-                score=score,
-                sharpness=blur_variance(gray),
-                landmarks=landmarks,
-            ))
+            results.append(
+                FaceDetection(
+                    bbox=(int(x), int(y), int(fw), int(fh)),
+                    embedding=embedding,
+                    score=score,
+                    sharpness=blur_variance(gray),
+                    landmarks=landmarks,
+                )
+            )
 
         return results
 
@@ -253,8 +261,12 @@ if __name__ == "__main__":
     assert blur_variance(np.zeros((0, 0), dtype=np.uint8)) == 0.0
 
     def _face(width=120, sharpness=500.0, score=0.99):
-        return FaceDetection(bbox=(0, 0, width, width), embedding=np.zeros(128, dtype=np.float32),
-                             score=score, sharpness=sharpness)
+        return FaceDetection(
+            bbox=(0, 0, width, width),
+            embedding=np.zeros(128, dtype=np.float32),
+            score=score,
+            sharpness=sharpness,
+        )
 
     good = _face()
     assert good.is_usable and good.is_enrollable and good.quality_reason() == ""
@@ -278,8 +290,10 @@ if __name__ == "__main__":
         "a borderline face was accepted as a permanent reference sample - that damage does not "
         "wash out, it makes every future comparison against that person worse"
     )
-    print("OK: quality gating separates usable faces from unusable ones, holds enrollment to a "
-          "higher bar, and reports why.")
+    print(
+        "OK: quality gating separates usable faces from unusable ones, holds enrollment to a "
+        "higher bar, and reports why."
+    )
 
     print("\nLoading YuNet + SFace models...")
     try:

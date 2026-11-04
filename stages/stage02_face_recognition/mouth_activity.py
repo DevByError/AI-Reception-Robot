@@ -96,10 +96,10 @@ class MouthActivity:
 
     face_id: int
     bbox: tuple[int, int, int, int]  # x, y, w, h - derived from the landmark mesh extent
-    mouth_open_ratio: float          # current vertical lip gap / mouth width
-    activity_score: float            # rolling std-dev of the above - the real "is talking" signal
+    mouth_open_ratio: float  # current vertical lip gap / mouth width
+    activity_score: float  # rolling std-dev of the above - the real "is talking" signal
     is_speaking: bool
-    samples: int                     # how many frames of history back this score (see below)
+    samples: int  # how many frames of history back this score (see below)
     # Head turn, same scale as stage08's engagement.face_yaw(): 0 = looking at the camera,
     # ~+/-0.5 at 45 degrees. None if the landmarks could not give one. Added 2026-10-27 so the
     # addressee check can ask "were they FACING the robot while their lips moved?".
@@ -152,8 +152,8 @@ class MouthActivityDetector:
         self._face_mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,  # video mode - tracks between frames, much faster per frame
             max_num_faces=max_faces,
-            refine_landmarks=True,    # the attention mesh - materially better lip precision,
-                                       # which is the one thing this module actually measures
+            refine_landmarks=True,  # the attention mesh - materially better lip precision,
+            # which is the one thing this module actually measures
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
@@ -164,7 +164,9 @@ class MouthActivityDetector:
         # Crop mode - see update_faces(). A separate single-face mesh in
         # static mode, because each call sees a different crop.
         self._crop_mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True, max_num_faces=1, refine_landmarks=True,
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
             min_detection_confidence=0.5,
         )
         self._crop_history: dict[int, deque] = {}
@@ -174,8 +176,9 @@ class MouthActivityDetector:
     CROP_EXPAND = 1.8
     CROP_MIN_SIDE = 192
 
-    def update_faces(self, frame: np.ndarray,
-                     faces: list[tuple[int, tuple[int, int, int, int]]]) -> list[MouthActivity]:
+    def update_faces(
+        self, frame: np.ndarray, faces: list[tuple[int, tuple[int, int, int, int]]]
+    ) -> list[MouthActivity]:
         """Mouth activity for faces that ANOTHER detector already found.
 
         faces: (track_id, (x, y, w, h)) pairs, e.g. from stage01's face_presence.py. Each face is
@@ -208,16 +211,21 @@ class MouthActivityDetector:
                 continue
             points = result.multi_face_landmarks[0].landmark
             ratio = self._mouth_open_ratio(points)
-            history = self._crop_history.setdefault(
-                track_id, deque(maxlen=self.history_frames))
+            history = self._crop_history.setdefault(track_id, deque(maxlen=self.history_frames))
             history.append(ratio)
             seen.add(track_id)
             score = statistics.pstdev(history) if len(history) >= 2 else 0.0
-            activities.append(MouthActivity(
-                face_id=track_id, bbox=(x, y, fw, fh), mouth_open_ratio=ratio,
-                activity_score=score, is_speaking=score >= self.speaking_threshold,
-                samples=len(history), yaw=self._yaw(points),
-            ))
+            activities.append(
+                MouthActivity(
+                    face_id=track_id,
+                    bbox=(x, y, fw, fh),
+                    mouth_open_ratio=ratio,
+                    activity_score=score,
+                    is_speaking=score >= self.speaking_threshold,
+                    samples=len(history),
+                    yaw=self._yaw(points),
+                )
+            )
         for gone in set(self._crop_history) - {t for t, _ in faces}:
             del self._crop_history[gone]
         return activities
@@ -252,15 +260,17 @@ class MouthActivityDetector:
             # Standard deviation needs at least two samples; one frame in, there's no movement to
             # measure yet, so report a flat zero rather than raising.
             score = statistics.pstdev(tracked.history) if len(tracked.history) >= 2 else 0.0
-            activities.append(MouthActivity(
-                face_id=tracked.face_id,
-                bbox=bbox,
-                mouth_open_ratio=ratio,
-                activity_score=score,
-                is_speaking=score >= self.speaking_threshold,
-                samples=len(tracked.history),
-                yaw=self._yaw(points),
-            ))
+            activities.append(
+                MouthActivity(
+                    face_id=tracked.face_id,
+                    bbox=bbox,
+                    mouth_open_ratio=ratio,
+                    activity_score=score,
+                    is_speaking=score >= self.speaking_threshold,
+                    samples=len(tracked.history),
+                    yaw=self._yaw(points),
+                )
+            )
 
         # Drop faces that left the frame, so their stale mouth history can't be inherited by a
         # different person who later happens to stand in a similar spot.
@@ -321,8 +331,7 @@ class MouthActivityDetector:
         best_distance = max_distance
         for candidate in self._tracked:
             distance = (
-                (candidate.center[0] - center[0]) ** 2
-                + (candidate.center[1] - center[1]) ** 2
+                (candidate.center[0] - center[0]) ** 2 + (candidate.center[1] - center[1]) ** 2
             ) ** 0.5
             if distance < best_distance:
                 best = candidate
@@ -387,8 +396,10 @@ if __name__ == "__main__":
     import cv2
 
     print(__doc__)
-    print("Calibrating. Sit still for a few seconds and note the score, then talk normally and "
-          "note it again. Set SPEAKING_ACTIVITY_THRESHOLD between the two.")
+    print(
+        "Calibrating. Sit still for a few seconds and note the score, then talk normally and "
+        "note it again. Set SPEAKING_ACTIVITY_THRESHOLD between the two."
+    )
     print(f"(current threshold: {SPEAKING_ACTIVITY_THRESHOLD})\n")
     print("Press 'q' in the preview window to quit.\n")
 
@@ -416,8 +427,9 @@ if __name__ == "__main__":
                     f"score={activity.activity_score:.4f} open={activity.mouth_open_ratio:.3f}"
                 )
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(frame, label, (x, max(20, y - 8)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                cv2.putText(
+                    frame, label, (x, max(20, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1
+                )
                 if not activity.is_speaking:
                     quiet_scores.append(activity.activity_score)
 
@@ -438,8 +450,12 @@ if __name__ == "__main__":
         peak_quiet = max(quiet_scores)
         print(f"\nHighest score seen while NOT classified as speaking: {peak_quiet:.4f}")
         if peak_quiet >= SPEAKING_ACTIVITY_THRESHOLD * 0.8:
-            print(f"WARNING: that's close to the threshold ({SPEAKING_ACTIVITY_THRESHOLD}) - "
-                  f"raise SPEAKING_ACTIVITY_THRESHOLD, or a still face will read as talking.")
+            print(
+                f"WARNING: that's close to the threshold ({SPEAKING_ACTIVITY_THRESHOLD}) - "
+                f"raise SPEAKING_ACTIVITY_THRESHOLD, or a still face will read as talking."
+            )
         else:
-            print(f"OK: comfortably below the threshold ({SPEAKING_ACTIVITY_THRESHOLD}) - a "
-                  f"still face should not be mistaken for a speaking one on this camera.")
+            print(
+                f"OK: comfortably below the threshold ({SPEAKING_ACTIVITY_THRESHOLD}) - a "
+                f"still face should not be mistaken for a speaking one on this camera."
+            )

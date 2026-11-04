@@ -27,6 +27,7 @@ heard, the local transcript (with its own confidence report) is used instead.
 from __future__ import annotations
 
 import io
+import logging
 import math
 import re
 import threading
@@ -35,14 +36,16 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 
+log = logging.getLogger(__name__)
+
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_TRANSCRIBE_URL = f"{GROQ_BASE_URL}/audio/transcriptions"
 GROQ_MODELS_URL = f"{GROQ_BASE_URL}/models"
 
 # How long a failing cloud recognizer is left alone before it is tried again (seconds).
-REST_AFTER_BAD_KEY_S = 600.0    # 401/403: nothing will change until somebody fixes .env
-REST_AFTER_QUOTA_S = 60.0       # 429: the per-minute limit resets within a minute
-REST_AFTER_FAILURE_S = 30.0     # timeouts, network errors, 5xx
+REST_AFTER_BAD_KEY_S = 600.0  # 401/403: nothing will change until somebody fixes .env
+REST_AFTER_QUOTA_S = 60.0  # 429: the per-minute limit resets within a minute
+REST_AFTER_FAILURE_S = 30.0  # timeouts, network errors, 5xx
 # A cloud transcript of a clip the local recognizer found no words in is only trusted when
 # Whisper's own "this is not speech" probability is below this.
 MAX_NO_SPEECH_WITHOUT_LOCAL_WORDS = 0.3
@@ -84,8 +87,14 @@ class GroqTranscriber:
 
     name = "Groq"
 
-    def __init__(self, api_key: str, model: str = "whisper-large-v3", timeout_s: float = 3.0,
-                 sample_rate: int = 16000, http=None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "whisper-large-v3",
+        timeout_s: float = 3.0,
+        sample_rate: int = 16000,
+        http=None,
+    ):
         if not api_key:
             raise CloudSTTError("no GROQ_API_KEY in .env")
         self.api_key = api_key
@@ -118,15 +127,22 @@ class GroqTranscriber:
         except Exception:  # noqa: BLE001 - an odd listing is not a reason to stop using it
             return
         if ids and self.model not in ids:
-            raise CloudSTTError(f"Groq does not offer the model '{self.model}' - check "
-                                f"GROQ_STT_MODEL in .env", 404)
+            raise CloudSTTError(
+                f"Groq does not offer the model '{self.model}' - check " f"GROQ_STT_MODEL in .env",
+                404,
+            )
 
-    def transcribe(self, pcm16: bytes, language: str = "en",
-                   prompt: str | None = None) -> tuple[str, float | None, float]:
+    def transcribe(
+        self, pcm16: bytes, language: str = "en", prompt: str | None = None
+    ) -> tuple[str, float | None, float]:
         """(text, average token probability or None, no-speech probability).
         Raises CloudSTTError."""
-        data = {"model": self.model, "language": language, "temperature": "0",
-                "response_format": "verbose_json"}
+        data = {
+            "model": self.model,
+            "language": language,
+            "temperature": "0",
+            "response_format": "verbose_json",
+        }
         if prompt:
             data["prompt"] = prompt
         try:
@@ -134,7 +150,8 @@ class GroqTranscriber:
                 GROQ_TRANSCRIBE_URL,
                 headers=self._headers(),
                 files={"file": ("question.wav", _wav_bytes(pcm16, self.sample_rate), "audio/wav")},
-                data=data, timeout=self.timeout_s,
+                data=data,
+                timeout=self.timeout_s,
             )
         except Exception as exc:  # noqa: BLE001 - timeouts, DNS, no network: all "unavailable"
             raise CloudSTTError(f"{type(exc).__name__}: {_short(exc)}") from exc
@@ -162,8 +179,15 @@ class CloudFinalEngine:
     question from the cloud with the local transcript as the backup. Anything else (hotwords,
     the device it runs on) is the local engine's."""
 
-    def __init__(self, local, cloud, make_confidence, make_chunk, log_transcripts: bool = True,
-                 clock=time.monotonic):
+    def __init__(
+        self,
+        local,
+        cloud,
+        make_confidence,
+        make_chunk,
+        log_transcripts: bool = True,
+        clock=time.monotonic,
+    ):
         self.local = local
         self.cloud = cloud
         self._make_confidence = make_confidence
@@ -199,24 +223,32 @@ class CloudFinalEngine:
         return prompt[:MAX_PROMPT_CHARS] or None
 
     def _rest(self, exc: CloudSTTError) -> None:
-        rest = (REST_AFTER_BAD_KEY_S if exc.status in (401, 403, 404) else
-                REST_AFTER_QUOTA_S if exc.status == 429 else REST_AFTER_FAILURE_S)
+        rest = (
+            REST_AFTER_BAD_KEY_S
+            if exc.status in (401, 403, 404)
+            else REST_AFTER_QUOTA_S if exc.status == 429 else REST_AFTER_FAILURE_S
+        )
         self._resting_until = self._clock() + rest
         hint = " - check GROQ_API_KEY in .env" if exc.status in (401, 403) else ""
-        print(f"[stt] {self.cloud.name} could not transcribe ({exc}){hint}. Using the local "
-              f"Whisper; trying {self.cloud.name} again in {rest:.0f}s.")
+        log.warning(
+            f"[stt] {self.cloud.name} could not transcribe ({exc}){hint}. Using the local "
+            f"Whisper; trying {self.cloud.name} again in {rest:.0f}s."
+        )
 
     def check_in_background(self) -> None:
         """Says at startup whether the key works, without holding up startup. A rejected key
         puts the cloud to rest at once, so the first visitor does not wait for it to fail."""
+
         def _run():
             try:
                 self.cloud.check()
             except CloudSTTError as exc:
                 self._rest(exc)
                 return
-            print(f"[stt] {self.cloud.name} {self.cloud.model} is ready - finished questions are "
-                  f"transcribed there, with the local Whisper as the backup.")
+            log.info(
+                f"[stt] {self.cloud.name} {self.cloud.model} is ready - finished questions are "
+                f"transcribed there, with the local Whisper as the backup."
+            )
 
         threading.Thread(target=_run, name="stt-cloud-check", daemon=True).start()
 
@@ -225,7 +257,8 @@ class CloudFinalEngine:
             return self.transcribe_stream(audio_chunks, locale)
         started = self._clock()
         cloud_job = self._pool.submit(
-            self.cloud.transcribe, b"".join(audio_chunks), locale.split("-")[0], self._prompt())
+            self.cloud.transcribe, b"".join(audio_chunks), locale.split("-")[0], self._prompt()
+        )
         # The local transcript runs here, at the same time, on the thread that already does the
         # partials - so the GPU is never used from two threads at once.
         local_chunks = self.transcribe_stream(audio_chunks, locale)
@@ -244,21 +277,30 @@ class CloudFinalEngine:
             return local_chunks
         took_ms = (self._clock() - started) * 1000
 
-        if not text or (not _has_words(local_text)
-                        and no_speech >= MAX_NO_SPEECH_WITHOUT_LOCAL_WORDS):
+        if not text or (
+            not _has_words(local_text) and no_speech >= MAX_NO_SPEECH_WITHOUT_LOCAL_WORDS
+        ):
             # Nothing, or words on audio the local recognizer heard no words in and Whisper
             # itself doubts is speech - the classic invented "Thank you."
             return local_chunks
         if avg_prob is not None and avg_prob < MIN_CLOUD_AVG_PROB and _has_words(local_text):
-            print(f"[stt] {self.cloud.name} was unsure of this one - using the local Whisper.")
+            log.info(f"[stt] {self.cloud.name} was unsure of this one - using the local Whisper.")
             return local_chunks
         if self._log_transcripts:
-            print(f'[stt] {self.cloud.name} ({self.cloud.model}, {took_ms:.0f}ms): "{text}" '
-                  f'- the local Whisper heard "{local_text}"')
+            log.info(
+                f'[stt] {self.cloud.name} ({self.cloud.model}, {took_ms:.0f}ms): "{text}" '
+                f'- the local Whisper heard "{local_text}"'
+            )
         else:
-            print(f"[stt] {self.cloud.name} ({self.cloud.model}) transcribed it in {took_ms:.0f}ms")
+            log.info(
+                f"[stt] {self.cloud.name} ({self.cloud.model}) transcribed it in {took_ms:.0f}ms"
+            )
         self.last_confidence = self._make_confidence(
-            total_word_count=len(text.split()), low_confidence_word_count=0,
-            corrected_word_count=0, avg_word_probability=avg_prob, no_speech_prob=no_speech)
+            total_word_count=len(text.split()),
+            low_confidence_word_count=0,
+            corrected_word_count=0,
+            avg_word_probability=avg_prob,
+            no_speech_prob=no_speech,
+        )
         self.last_source = self.cloud.name
         return [self._make_chunk(text=text, is_final=True)]

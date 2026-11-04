@@ -33,30 +33,132 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
 from model_paths import KOKORO_MODEL, KOKORO_VOICES  # noqa: E402
 
 SAMPLE_RATE = 24000
-MAX_PHONEMES = 510          # the model's context, minus the two pad tokens
+MAX_PHONEMES = 510  # the model's context, minus the two pad tokens
 
 # Kokoro v1.0's phoneme vocabulary (the "vocab" table of its config.json).
 _VOCAB_SYMBOLS = {
-    ";": 1, ":": 2, ",": 3, ".": 4, "!": 5, "?": 6, "—": 9, "…": 10, '"': 11, "(": 12, ")": 13,
-    "“": 14, "”": 15, " ": 16, "̃": 17, "ʣ": 18, "ʥ": 19, "ʦ": 20, "ʨ": 21, "ᵝ": 22, "ꭧ": 23,
-    "A": 24, "I": 25, "O": 31, "Q": 33, "S": 35, "T": 36, "W": 39, "Y": 41, "ᵊ": 42,
-    "a": 43, "b": 44, "c": 45, "d": 46, "e": 47, "f": 48, "h": 50, "i": 51, "j": 52, "k": 53,
-    "l": 54, "m": 55, "n": 56, "o": 57, "p": 58, "q": 59, "r": 60, "s": 61, "t": 62, "u": 63,
-    "v": 64, "w": 65, "x": 66, "y": 67, "z": 68, "ɑ": 69, "ɐ": 70, "ɒ": 71, "æ": 72, "β": 75,
-    "ɔ": 76, "ɕ": 77, "ç": 78, "ɖ": 80, "ð": 81, "ʤ": 82, "ə": 83, "ɚ": 85, "ɛ": 86, "ɜ": 87,
-    "ɟ": 90, "ɡ": 92, "ɥ": 99, "ɨ": 101, "ɪ": 102, "ʝ": 103, "ɯ": 110, "ɰ": 111, "ŋ": 112,
-    "ɳ": 113, "ɲ": 114, "ɴ": 115, "ø": 116, "ɸ": 118, "θ": 119, "œ": 120, "ɹ": 123, "ɾ": 125,
-    "ɻ": 126, "ʁ": 128, "ɽ": 129, "ʂ": 130, "ʃ": 131, "ʈ": 132, "ʧ": 133, "ʊ": 135, "ʋ": 136,
-    "ʌ": 138, "ɣ": 139, "ɤ": 140, "χ": 142, "ʎ": 143, "ʒ": 147, "ʔ": 148, "ˈ": 156, "ˌ": 157,
-    "ː": 158, "ʰ": 162, "ʲ": 164, "↓": 169, "→": 171, "↗": 172, "↘": 173, "ᵻ": 177,
+    ";": 1,
+    ":": 2,
+    ",": 3,
+    ".": 4,
+    "!": 5,
+    "?": 6,
+    "—": 9,
+    "…": 10,
+    '"': 11,
+    "(": 12,
+    ")": 13,
+    "“": 14,
+    "”": 15,
+    " ": 16,
+    "̃": 17,
+    "ʣ": 18,
+    "ʥ": 19,
+    "ʦ": 20,
+    "ʨ": 21,
+    "ᵝ": 22,
+    "ꭧ": 23,
+    "A": 24,
+    "I": 25,
+    "O": 31,
+    "Q": 33,
+    "S": 35,
+    "T": 36,
+    "W": 39,
+    "Y": 41,
+    "ᵊ": 42,
+    "a": 43,
+    "b": 44,
+    "c": 45,
+    "d": 46,
+    "e": 47,
+    "f": 48,
+    "h": 50,
+    "i": 51,
+    "j": 52,
+    "k": 53,
+    "l": 54,
+    "m": 55,
+    "n": 56,
+    "o": 57,
+    "p": 58,
+    "q": 59,
+    "r": 60,
+    "s": 61,
+    "t": 62,
+    "u": 63,
+    "v": 64,
+    "w": 65,
+    "x": 66,
+    "y": 67,
+    "z": 68,
+    "ɑ": 69,
+    "ɐ": 70,
+    "ɒ": 71,
+    "æ": 72,
+    "β": 75,
+    "ɔ": 76,
+    "ɕ": 77,
+    "ç": 78,
+    "ɖ": 80,
+    "ð": 81,
+    "ʤ": 82,
+    "ə": 83,
+    "ɚ": 85,
+    "ɛ": 86,
+    "ɜ": 87,
+    "ɟ": 90,
+    "ɡ": 92,
+    "ɥ": 99,
+    "ɨ": 101,
+    "ɪ": 102,
+    "ʝ": 103,
+    "ɯ": 110,
+    "ɰ": 111,
+    "ŋ": 112,
+    "ɳ": 113,
+    "ɲ": 114,
+    "ɴ": 115,
+    "ø": 116,
+    "ɸ": 118,
+    "θ": 119,
+    "œ": 120,
+    "ɹ": 123,
+    "ɾ": 125,
+    "ɻ": 126,
+    "ʁ": 128,
+    "ɽ": 129,
+    "ʂ": 130,
+    "ʃ": 131,
+    "ʈ": 132,
+    "ʧ": 133,
+    "ʊ": 135,
+    "ʋ": 136,
+    "ʌ": 138,
+    "ɣ": 139,
+    "ɤ": 140,
+    "χ": 142,
+    "ʎ": 143,
+    "ʒ": 147,
+    "ʔ": 148,
+    "ˈ": 156,
+    "ˌ": 157,
+    "ː": 158,
+    "ʰ": 162,
+    "ʲ": 164,
+    "↓": 169,
+    "→": 171,
+    "↗": 172,
+    "↘": 173,
+    "ᵻ": 177,
 }
 
 
 def _load_espeak() -> None:
     """Points phonemizer at the espeak-ng that espeakng-loader ships, so nothing has to be
     installed system-wide (the usual reason espeak-based TTS fails on Windows)."""
-    from phonemizer.backend.espeak.wrapper import EspeakWrapper
     import espeakng_loader
+    from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
     lib = os.getenv("PHONEMIZER_ESPEAK_LIBRARY") or espeakng_loader.get_library_path()
     try:
@@ -64,7 +166,9 @@ def _load_espeak() -> None:
     except OSError:
         lib = ctypes.util.find_library("espeak-ng") or ctypes.util.find_library("espeak")
         if not lib:
-            raise RuntimeError("espeak-ng could not be loaded - pip install espeakng-loader")
+            raise RuntimeError(
+                "espeak-ng could not be loaded - pip install espeakng-loader"
+            ) from None
     EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
     EspeakWrapper.set_library(lib)
 
@@ -93,29 +197,38 @@ class KokoroVoice:
     name = "kokoro"
     sample_rate = SAMPLE_RATE
 
-    def __init__(self, voice: str = "af_heart", model_path: Path = KOKORO_MODEL,
-                 voices_path: Path = KOKORO_VOICES, threads: int | None = None):
+    def __init__(
+        self,
+        voice: str = "af_heart",
+        model_path: Path = KOKORO_MODEL,
+        voices_path: Path = KOKORO_VOICES,
+        threads: int | None = None,
+    ):
         import onnxruntime as ort
         import phonemizer  # noqa: F401 - fail here, at load time, not mid-sentence
 
         for path in (model_path, voices_path):
             if not Path(path).exists():
                 raise FileNotFoundError(
-                    f"{path} is missing - run python stages/stage00_setup/download_models.py")
+                    f"{path} is missing - run python stages/stage00_setup/download_models.py"
+                )
         _load_espeak()
         options = ort.SessionOptions()
         if threads:
             options.intra_op_num_threads = threads
-        self._session = ort.InferenceSession(str(model_path), options,
-                                             providers=["CPUExecutionProvider"])
+        self._session = ort.InferenceSession(
+            str(model_path), options, providers=["CPUExecutionProvider"]
+        )
         self._inputs = {i.name for i in self._session.get_inputs()}
         voices = np.load(str(voices_path))
         if voice not in voices.files:
-            raise ValueError(f"unknown Kokoro voice {voice!r}; try one of "
-                             f"{', '.join(sorted(voices.files)[:12])}, ...")
-        self._style = np.asarray(voices[voice], dtype=np.float32)   # (510, 1, 256)
+            raise ValueError(
+                f"unknown Kokoro voice {voice!r}; try one of "
+                f"{', '.join(sorted(voices.files)[:12])}, ..."
+            )
+        self._style = np.asarray(voices[voice], dtype=np.float32)  # (510, 1, 256)
         self.voice = voice
-        self._lock = threading.Lock()   # espeak-ng is not re-entrant
+        self._lock = threading.Lock()  # espeak-ng is not re-entrant
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -125,8 +238,8 @@ class KokoroVoice:
         text = re.sub(r"\bMr\.(?= [A-Z])", "Mister", text)
         text = re.sub(r"\bMrs\.(?= [A-Z])", "Missus", text)
         text = re.sub(r"\bMs\.(?= [A-Z])", "Miss", text)
-        text = re.sub(r"(?<=\d),(?=\d)", "", text)                  # 12,000 -> 12000
-        text = re.sub(r"(?<=\d)-(?=\d)", " to ", text)              # 9-5 -> 9 to 5
+        text = re.sub(r"(?<=\d),(?=\d)", "", text)  # 12,000 -> 12000
+        text = re.sub(r"(?<=\d)-(?=\d)", " to ", text)  # 9-5 -> 9 to 5
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 
@@ -134,8 +247,9 @@ class KokoroVoice:
         import phonemizer
 
         with self._lock:
-            phonemes = phonemizer.phonemize(self._normalize(text), "en-us",
-                                            preserve_punctuation=True, with_stress=True)
+            phonemes = phonemizer.phonemize(
+                self._normalize(text), "en-us", preserve_punctuation=True, with_stress=True
+            )
         phonemes = phonemes.replace("ʲ", "j").replace("r", "ɹ").replace("x", "k")
         return "".join(p for p in phonemes if p in _VOCAB_SYMBOLS).strip()
 
@@ -145,8 +259,7 @@ class KokoroVoice:
         feed = {"style": style}
         if "input_ids" in self._inputs:
             feed["input_ids"] = np.array([[0, *tokens, 0]], dtype=np.int64)
-            feed["speed"] = np.array([speed], dtype=np.int32 if speed == int(speed)
-                                     else np.float32)
+            feed["speed"] = np.array([speed], dtype=np.int32 if speed == int(speed) else np.float32)
         else:
             feed["tokens"] = np.array([[0, *tokens, 0]], dtype=np.int64)
             feed["speed"] = np.array([speed], dtype=np.float32)
@@ -164,7 +277,7 @@ class KokoroVoice:
             else:
                 cut = max(phonemes.rfind(c, 0, MAX_PHONEMES) for c in ".,;:!? ")
                 cut = cut if cut > 0 else MAX_PHONEMES
-                chunk, phonemes = phonemes[:cut + 1], phonemes[cut + 1:].lstrip()
+                chunk, phonemes = phonemes[: cut + 1], phonemes[cut + 1 :].lstrip()
             parts.append(_trim(self._run(chunk, max(0.5, min(2.0, speed)))))
         return np.concatenate(parts).astype(np.float32)
 
@@ -174,13 +287,17 @@ if __name__ == "__main__":
     v = KokoroVoice()
     print(f"loaded in {time.monotonic() - t0:.1f}s")
     v.create("Warm up.")
-    for line in ("Hi! Welcome to Lincoln University College.",
-                 "The library is on the third floor of Block A, right next to the lifts."):
+    for line in (
+        "Hi! Welcome to Lincoln University College.",
+        "The library is on the third floor of Block A, right next to the lifts.",
+    ):
         t0 = time.monotonic()
         audio = v.create(line)
         took = time.monotonic() - t0
-        print(f"{took * 1000:.0f}ms for {audio.size / SAMPLE_RATE:.2f}s of speech "
-              f"(real-time factor {took / max(audio.size / SAMPLE_RATE, 1e-6):.2f}): {line}")
+        print(
+            f"{took * 1000:.0f}ms for {audio.size / SAMPLE_RATE:.2f}s of speech "
+            f"(real-time factor {took / max(audio.size / SAMPLE_RATE, 1e-6):.2f}): {line}"
+        )
     try:
         import sounddevice as sd
 

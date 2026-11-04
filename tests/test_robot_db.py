@@ -20,7 +20,7 @@ def db(tmp_path):
 
 
 def test_full_round_trip_and_cascade(db):
-    robot_db.self_test_round_trip(db)          # the same check MySQL's --self-test runs
+    robot_db.self_test_round_trip(db)  # the same check MySQL's --self-test runs
     assert db.counts()["people"] == 0
 
 
@@ -72,7 +72,7 @@ def test_face_store_on_sqlite(db):
 def test_connect_or_none_falls_back_to_sqlite(tmp_path, monkeypatch):
     monkeypatch.setenv("LUC_DB_BACKEND", "auto")
     monkeypatch.setenv("LUC_DB_HOST", "127.0.0.1")
-    monkeypatch.setenv("LUC_DB_PORT", "1")            # nothing listens there
+    monkeypatch.setenv("LUC_DB_PORT", "1")  # nothing listens there
     monkeypatch.setenv("LUC_DB_SQLITE_PATH", str(tmp_path / "fallback.db"))
     db = robot_db.connect_or_none(verbose=False)
     assert isinstance(db, robot_db.SQLiteRobotDatabase)

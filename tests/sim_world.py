@@ -42,13 +42,19 @@ def to_16k(pcm: np.ndarray, rate: int) -> np.ndarray:
     if rate == MIC_RATE:
         return pcm
     from math import gcd
+
     g = gcd(MIC_RATE, rate)
     return resample_poly(pcm, MIC_RATE // g, rate // g).astype(np.float32)
 
 
 class World:
-    def __init__(self, echo_gain: float = 0.35, noise_rms: float = 0.002,
-                 fps: float = 15.0, echo_delay_s: float = 0.06):
+    def __init__(
+        self,
+        echo_gain: float = 0.35,
+        noise_rms: float = 0.002,
+        fps: float = 15.0,
+        echo_delay_s: float = 0.06,
+    ):
         self.echo_gain = echo_gain
         self.echo_delay_s = echo_delay_s
         self.noise_rms = noise_rms
@@ -57,21 +63,21 @@ class World:
         self.face_present = threading.Event()
         self.lips_moving = threading.Event()
         self._lock = threading.Lock()
-        self._visitor = deque()            # float32 samples at 16k, consumed in real time
+        self._visitor = deque()  # float32 samples at 16k, consumed in real time
         # The robot's audio on its way to the microphone, placed by TIME: (first mic sample
         # index, samples). Sample index i of the microphone is time _mic_t0 + i/16000.
         self._echo: list[tuple[int, np.ndarray]] = []
         self._echo_end = 0
         self._mic_t0: float | None = None
         self._mic_index = 0
-        self.played: list[tuple[float, float, int, bytes]] = []   # (start, end, rate, pcm)
-        self._last_write_end = 0.0        # when the audio written so far finishes playing
+        self.played: list[tuple[float, float, int, bytes]] = []  # (start, end, rate, pcm)
+        self._last_write_end = 0.0  # when the audio written so far finishes playing
         self._play_end = 0.0
         self._writing = 0
-        self._run_started = 0.0           # start of the current stretch of continuous output
-        self.marks: list[tuple[str, float]] = []   # (what, when) - the visitor's side, for logs
+        self._run_started = 0.0  # start of the current stretch of continuous output
+        self.marks: list[tuple[str, float]] = []  # (what, when) - the visitor's side, for logs
         self.mic_blocks = 0
-        self.underflows = 0               # speaker callbacks that came back too late
+        self.underflows = 0  # speaker callbacks that came back too late
         self._rng = np.random.default_rng(0)
         self._frame_face = self._make_frame(with_face=True)
         self._frame_empty = self._make_frame(with_face=False)
@@ -123,10 +129,18 @@ class World:
         world = self
 
         class FakeOutputStream:
-            latency = 0.06      # how far ahead of the speaker write() may run
+            latency = 0.06  # how far ahead of the speaker write() may run
 
-            def __init__(self, samplerate, channels=1, dtype="int16", device=None,
-                         blocksize=0, callback=None, **_k):
+            def __init__(
+                self,
+                samplerate,
+                channels=1,
+                dtype="int16",
+                device=None,
+                blocksize=0,
+                callback=None,
+                **_k,
+            ):
                 self.rate = int(samplerate)
                 self.callback = callback
                 self.blocksize = int(blocksize) or int(self.rate * 0.04)
@@ -163,7 +177,7 @@ class World:
                 seconds = pcm.size / float(self.rate)
                 with world._lock:
                     now = time.monotonic()
-                    start = max(now, world._play_end)        # plays after what is buffered
+                    start = max(now, world._play_end)  # plays after what is buffered
                     if start - world._play_end > 0.15:
                         world._run_started = start
                     world._play_end = world._last_write_end = start + seconds
@@ -172,7 +186,7 @@ class World:
                     world.played.append((start, start + seconds, self.rate, bytes(data)))
                 wait = start + seconds - self.latency - time.monotonic()
                 if wait > 0:
-                    time.sleep(wait)                         # the buffer is full
+                    time.sleep(wait)  # the buffer is full
                 with world._lock:
                     world._writing -= 1
 
@@ -197,8 +211,16 @@ class World:
         world = self
 
         class FakeInputStream:
-            def __init__(self, samplerate, blocksize, dtype="int16", channels=1, device=None,
-                         callback=None, **_k):
+            def __init__(
+                self,
+                samplerate,
+                blocksize,
+                dtype="int16",
+                channels=1,
+                device=None,
+                callback=None,
+                **_k,
+            ):
                 assert int(samplerate) == MIC_RATE
                 self.blocksize = int(blocksize)
                 self.callback = callback
@@ -261,8 +283,9 @@ class World:
                 self._play_end = self._last_write_end = now
                 if self._mic_t0 is not None:
                     cut = int(round((now + self.echo_delay_s - self._mic_t0) * MIC_RATE))
-                    self._echo = [(at, seg[:max(0, cut - at)]) for at, seg in self._echo
-                                  if cut > at]
+                    self._echo = [
+                        (at, seg[: max(0, cut - at)]) for at, seg in self._echo if cut > at
+                    ]
                     self._echo_end = min(self._echo_end, cut)
 
     def _add_echo(self, written_at: float, samples: np.ndarray) -> None:
@@ -272,7 +295,7 @@ class World:
             return
         at = int(round((written_at + self.echo_delay_s - self._mic_t0) * MIC_RATE))
         if self._echo and abs(at - self._echo_end) < MIC_RATE * 0.05:
-            at = self._echo_end        # the same stretch of sound: keep it gapless
+            at = self._echo_end  # the same stretch of sound: keep it gapless
         at = max(at, self._mic_index)
         self._echo.append((at, np.asarray(samples, np.float32)))
         self._echo_end = at + len(samples)
@@ -290,7 +313,7 @@ class World:
             for at, seg in self._echo:
                 lo, hi = max(a, at), min(b, at + len(seg))
                 if lo < hi:
-                    out[lo - a:hi - a] += seg[lo - at:hi - at]
+                    out[lo - a : hi - a] += seg[lo - at : hi - at]
                 if at + len(seg) > b:
                     keep.append((at, seg))
             self._echo = keep
@@ -304,8 +327,9 @@ class World:
         samples = np.asarray(pcm16k, dtype=np.float32)
         if np.abs(samples).max() > 1.5:
             samples = samples / 32768.0
-        self.marks.append((f"visitor starts ({samples.size / MIC_RATE:.1f}s, lips={lips})",
-                           time.monotonic()))
+        self.marks.append(
+            (f"visitor starts ({samples.size / MIC_RATE:.1f}s, lips={lips})", time.monotonic())
+        )
         with self._lock:
             self._visitor.extend(samples)
             if lips:
@@ -319,8 +343,9 @@ class World:
         with self._lock:
             return time.monotonic() - self._play_end < 0.15
 
-    def wait_robot_spoke_then_silent(self, since: float, silence_s: float = 1.0,
-                                     timeout_s: float = 60.0) -> float:
+    def wait_robot_spoke_then_silent(
+        self, since: float, silence_s: float = 1.0, timeout_s: float = 60.0
+    ) -> float:
         """Waits until the robot has said something after `since` and then been quiet for
         silence_s. Returns when its last sound ended."""
         deadline = time.monotonic() + timeout_s
@@ -328,8 +353,7 @@ class World:
             with self._lock:
                 last_end = self._last_write_end
                 writing = self._writing
-            if (writing == 0 and last_end > since
-                    and time.monotonic() - last_end >= silence_s):
+            if writing == 0 and last_end > since and time.monotonic() - last_end >= silence_s:
                 return last_end
             time.sleep(0.05)
         raise TimeoutError(f"the robot did not speak (and stop) within {timeout_s}s")
@@ -366,7 +390,9 @@ def fake_mouth_detector(world: World):
     """A MouthActivityDetector stand-in driven by World.lips_moving."""
     import sys
 
-    sys.path.append(str(Path(__file__).resolve().parents[1] / "stages" / "stage02_face_recognition"))
+    sys.path.append(
+        str(Path(__file__).resolve().parents[1] / "stages" / "stage02_face_recognition")
+    )
     from mouth_activity import MouthActivity
 
     class FakeMouthDetector:
@@ -375,9 +401,15 @@ def fake_mouth_detector(world: World):
 
         def _activity(self, face_id, bbox):
             moving = world.lips_moving.is_set()
-            return MouthActivity(face_id=face_id, bbox=tuple(bbox), mouth_open_ratio=0.3,
-                                 activity_score=0.05 if moving else 0.0, is_speaking=moving,
-                                 samples=12, yaw=0.0)
+            return MouthActivity(
+                face_id=face_id,
+                bbox=tuple(bbox),
+                mouth_open_ratio=0.3,
+                activity_score=0.05 if moving else 0.0,
+                is_speaking=moving,
+                samples=12,
+                yaw=0.0,
+            )
 
         def update_faces(self, frame, faces):
             return [self._activity(tid, bbox) for tid, bbox in faces]

@@ -44,8 +44,8 @@ def check_camera(index: int = 0) -> bool:
 # The previous version of this check recorded a second of audio and confirmed the array was not
 # empty. Its docstring claimed it confirmed "not just zeros", but it never looked at a single
 # sample - a muted microphone passed it.
-MIC_SILENT_DBFS = -60.0   # below this there is no signal at all: muted, or the wrong device
-MIC_QUIET_DBFS = -40.0    # audible but weak - Whisper will struggle
+MIC_SILENT_DBFS = -60.0  # below this there is no signal at all: muted, or the wrong device
+MIC_QUIET_DBFS = -40.0  # audible but weak - Whisper will struggle
 MIC_CLIP_FRACTION = 0.001  # more than 0.1% of samples at full scale = distortion
 # Gap between a visitor's voice and the room underneath it. Below roughly this, the words and
 # the background are competing, and that is a microphone/placement problem rather than anything
@@ -61,8 +61,8 @@ def check_microphone(seconds: float = 3.0, interactive: bool = True) -> bool:
     noise floor, which is worth knowing on its own.
     """
     try:
-        import sounddevice as sd
         import numpy as np
+        import sounddevice as sd
     except ImportError:
         print("FAIL Mic: sounddevice/numpy not installed")
         return False
@@ -96,8 +96,9 @@ def check_microphone(seconds: float = 3.0, interactive: bool = True) -> bool:
     frame = 480  # 30ms at 16kHz, same frame size the real VAD uses
     usable = audio[: len(audio) - len(audio) % frame]
     frames = usable.reshape(-1, frame) if usable.size else audio.reshape(1, -1)
-    frame_rms = (np.sqrt(np.mean(frames ** 2, axis=1)) if frames.size
-                 else np.array([0.0], dtype=np.float32))
+    frame_rms = (
+        np.sqrt(np.mean(frames**2, axis=1)) if frames.size else np.array([0.0], dtype=np.float32)
+    )
 
     signal_db = _dbfs(float(np.percentile(frame_rms, 90)))
     noise_db = _dbfs(float(np.percentile(frame_rms, 10)))
@@ -105,8 +106,10 @@ def check_microphone(seconds: float = 3.0, interactive: bool = True) -> bool:
     snr_db = signal_db - noise_db
 
     rms_db = signal_db  # the level checks below are about the SPEECH, not the room
-    stats = (f"speech {signal_db:.0f} dBFS, background {noise_db:.0f} dBFS, "
-             f"signal-to-noise {snr_db:.0f} dB, peak {peak_db:.0f} dBFS")
+    stats = (
+        f"speech {signal_db:.0f} dBFS, background {noise_db:.0f} dBFS, "
+        f"signal-to-noise {snr_db:.0f} dB, peak {peak_db:.0f} dBFS"
+    )
 
     try:
         device_name = sd.query_devices(kind="input")["name"]
@@ -115,31 +118,43 @@ def check_microphone(seconds: float = 3.0, interactive: bool = True) -> bool:
 
     if rms_db < MIC_SILENT_DBFS:
         print(f"FAIL Mic: essentially silent ({stats}) on '{device_name}'.")
-        print("     Nothing is reaching the microphone. Check it isn't muted, and that this is "
-              "the right input device - run list_audio_devices.py to see the alternatives.")
+        print(
+            "     Nothing is reaching the microphone. Check it isn't muted, and that this is "
+            "the right input device - run list_audio_devices.py to see the alternatives."
+        )
         return False
 
     if clipped > MIC_CLIP_FRACTION:
-        print(f"WARN Mic: clipping - {clipped * 100:.1f}% of samples are at full scale "
-              f"({stats}) on '{device_name}'.")
-        print("     Distorted audio transcribes badly. Lower the input gain, or move the "
-              "microphone further from the speaker.")
+        print(
+            f"WARN Mic: clipping - {clipped * 100:.1f}% of samples are at full scale "
+            f"({stats}) on '{device_name}'."
+        )
+        print(
+            "     Distorted audio transcribes badly. Lower the input gain, or move the "
+            "microphone further from the speaker."
+        )
         return True
 
     if rms_db < MIC_QUIET_DBFS:
         print(f"WARN Mic: quiet ({stats}) on '{device_name}'.")
-        print("     This still works, but Whisper does noticeably better with a stronger "
-              "signal. Raise the input gain in the OS sound settings, or move the microphone "
-              "closer to where people actually stand.")
+        print(
+            "     This still works, but Whisper does noticeably better with a stronger "
+            "signal. Raise the input gain in the OS sound settings, or move the microphone "
+            "closer to where people actually stand."
+        )
         return True
 
     if snr_db < MIC_MIN_SNR_DB:
-        print(f"WARN Mic: little separation between voice and background ({stats}) on "
-              f"'{device_name}'.")
-        print("     Either nothing was said while this ran - in which case just re-run it and "
-              "speak - or the room is genuinely loud relative to a visitor's voice. The second "
-              "case is the one that hurts: it is what a directional or close-talk microphone "
-              "fixes, and what no amount of software tuning does.")
+        print(
+            f"WARN Mic: little separation between voice and background ({stats}) on "
+            f"'{device_name}'."
+        )
+        print(
+            "     Either nothing was said while this ran - in which case just re-run it and "
+            "speak - or the room is genuinely loud relative to a visitor's voice. The second "
+            "case is the one that hurts: it is what a directional or close-talk microphone "
+            "fixes, and what no amount of software tuning does."
+        )
         return True
 
     print(f"PASS Mic: good level ({stats}) on '{device_name}'.")
@@ -149,8 +164,8 @@ def check_microphone(seconds: float = 3.0, interactive: bool = True) -> bool:
 def check_speaker() -> bool:
     """Plays a short test tone (requires human confirmation by listening)."""
     try:
-        import sounddevice as sd
         import numpy as np
+        import sounddevice as sd
     except ImportError:
         print("FAIL Speaker: sounddevice/numpy not installed")
         return False

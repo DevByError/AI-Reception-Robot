@@ -18,11 +18,9 @@ Press 'q' in the preview window to quit.
 from __future__ import annotations
 
 import time
-
 from typing import TYPE_CHECKING
 
 import cv2
-
 from presence_detector import DetectedPerson
 
 if TYPE_CHECKING:  # imported lazily below: ultralytics pulls in PyTorch (~2GB), which the
@@ -35,7 +33,7 @@ NEAR_THRESHOLD_AREA = 15000  # same placeholder value as presence_detector.py
 # Debouncing per tracked person: even with a real tracker, a brief occlusion or a bad frame can
 # drop a track for a frame or two. Require a few consecutive frames of agreement before firing
 # a confirmed entered/left event - avoids the real robot re-greeting the same person repeatedly.
-ENTER_CONFIRM_FRAMES = 3   # ~0.1s at 30fps - confirm "entered" fast, greeting should feel snappy
+ENTER_CONFIRM_FRAMES = 3  # ~0.1s at 30fps - confirm "entered" fast, greeting should feel snappy
 LEAVE_CONFIRM_FRAMES = 20  # ~0.7s at 30fps - confirm "left" slower, avoid false exits
 
 
@@ -46,8 +44,9 @@ class PerTrackPresenceTracker:
     stays.
     """
 
-    def __init__(self, enter_frames: int = ENTER_CONFIRM_FRAMES,
-                 leave_frames: int = LEAVE_CONFIRM_FRAMES):
+    def __init__(
+        self, enter_frames: int = ENTER_CONFIRM_FRAMES, leave_frames: int = LEAVE_CONFIRM_FRAMES
+    ):
         self.enter_frames = enter_frames
         self.leave_frames = leave_frames
         self._present_streak: dict[int, int] = {}
@@ -81,16 +80,20 @@ class PerTrackPresenceTracker:
 
 
 INFERENCE_SIZE = 320  # downscale for inference - on CPU, a smaller frame means faster inference,
-                       # which means less motion between processed frames, which is what
-                       # ByteTrack actually needs to keep the same ID across frames. Boxes are
-                       # returned scaled back to the original frame size automatically.
+# which means less motion between processed frames, which is what
+# ByteTrack actually needs to keep the same ID across frames. Boxes are
+# returned scaled back to the original frame size automatically.
 
 
-def detect_people(model: "YOLO", frame) -> list[DetectedPerson]:
+def detect_people(model: YOLO, frame) -> list[DetectedPerson]:
     """Runs detection + tracking on one frame. Returns only people with a confirmed track id
     (the tracker needs a frame or two before it assigns one - that's normal)."""
     results = model.track(
-        frame, persist=True, tracker="bytetrack.yaml", verbose=False, imgsz=INFERENCE_SIZE,
+        frame,
+        persist=True,
+        tracker="bytetrack.yaml",
+        verbose=False,
+        imgsz=INFERENCE_SIZE,
     )[0]
     people: list[DetectedPerson] = []
 
@@ -121,8 +124,13 @@ def draw_boxes(frame, people: list[DetectedPerson]):
         color = (0, 200, 0) if p.distance_estimate == "near" else (0, 165, 255)
         cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
         cv2.putText(
-            frame, f"person #{p.track_id} ({p.distance_estimate})", (x, max(0, y - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
+            frame,
+            f"person #{p.track_id} ({p.distance_estimate})",
+            (x, max(0, y - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
         )
     return frame
 

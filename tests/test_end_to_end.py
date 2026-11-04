@@ -35,8 +35,10 @@ pytest.importorskip("livekit")
 from sim_world import FACE_IMAGE, World, fake_mouth_detector, to_16k  # noqa: E402
 
 if not FACE_IMAGE.exists():
-    pytest.skip("needs a photo of a face at tests/data/face.jpg (see tests/data/README.md)",
-                allow_module_level=True)
+    pytest.skip(
+        "needs a photo of a face at tests/data/face.jpg (see tests/data/README.md)",
+        allow_module_level=True,
+    )
 
 
 class SlowLLM:
@@ -46,10 +48,12 @@ class SlowLLM:
     supports_streaming = True
     supports_general_streaming = True
 
-    GROUNDED = ("The Faculty of Engineering offers diplomas, bachelor's degrees and "
-                "postgraduate programmes. These include civil, mechanical and electrical "
-                "engineering. Most bachelor's programmes take four years. You can apply online "
-                "through the university website, and the admissions office can help you choose.")
+    GROUNDED = (
+        "The Faculty of Engineering offers diplomas, bachelor's degrees and "
+        "postgraduate programmes. These include civil, mechanical and electrical "
+        "engineering. Most bachelor's programmes take four years. You can apply online "
+        "through the university website, and the admissions office can help you choose."
+    )
 
     def __init__(self):
         self.calls = []
@@ -97,7 +101,7 @@ def visitor_voice():
     for key, text in lines.items():
         audio = voice.create(text)
         pcm = to_16k(audio * 32767.0, kv.SAMPLE_RATE) / 32768.0
-        out[key] = (pcm * 0.6).astype(np.float32)   # a normal speaking level at a metre
+        out[key] = (pcm * 0.6).astype(np.float32)  # a normal speaking level at a metre
     return out
 
 
@@ -108,17 +112,20 @@ def robot_env(tmp_path, monkeypatch):
     monkeypatch.setenv("LUC_DB_SQLITE_PATH", str(tmp_path / "robot.db"))
     monkeypatch.setattr(sd, "RawInputStream", world.input_stream())
     monkeypatch.setattr(sd, "RawOutputStream", world.output_stream())
-    monkeypatch.setattr(sd, "query_devices",
-                        lambda *a, **k: {"name": "simulated", "default_samplerate": 48000.0})
+    monkeypatch.setattr(
+        sd, "query_devices", lambda *a, **k: {"name": "simulated", "default_samplerate": 48000.0}
+    )
     monkeypatch.setattr(cv2, "VideoCapture", world.camera())
     monkeypatch.setattr(cv2, "waitKey", lambda *_a: -1)
 
     import identity
+
     cache = tmp_path / "identity_cache.json"
     shutil.copy(identity.CACHE_FILE, cache)
     monkeypatch.setattr(identity, "CACHE_FILE", cache)
 
     import main_live as ml
+
     llm = SlowLLM()
     monkeypatch.setattr(ml, "MouthActivityDetector", fake_mouth_detector(world))
     monkeypatch.setattr(ml, "_build_answer_generator", lambda: llm)
@@ -126,8 +133,12 @@ def robot_env(tmp_path, monkeypatch):
     monkeypatch.setattr(ml, "CONSENT_LISTEN_TIMEOUT_S", 5.0)
     monkeypatch.setattr(ml, "LISTEN_TIMEOUT_S", 6.0)
     for name, value in {
-        "STT_BACKEND": "sherpa", "TTS_BACKEND": "kokoro", "HEADLESS": True,
-        "FACE_DISPLAY": False, "CAMERA_PREVIEW": False, "TTS_RATE_VARIATION": 0.0,
+        "STT_BACKEND": "sherpa",
+        "TTS_BACKEND": "kokoro",
+        "HEADLESS": True,
+        "FACE_DISPLAY": False,
+        "CAMERA_PREVIEW": False,
+        "TTS_RATE_VARIATION": 0.0,
         "LOG_TRANSCRIPTS": True,
     }.items():
         monkeypatch.setattr(ml.RT, name, value)
@@ -182,6 +193,7 @@ def _stop(world, thread):
     thread.join(timeout=20)
     if getattr(world, "recording", None):
         import pickle
+
         path, rec = world.recording
         rec["played"] = [(a, b) for a, b, _r, _p in world.played]
         rec["marks"] = world.marks
@@ -190,14 +202,16 @@ def _stop(world, thread):
     # A timeline of what the robot played, for reading a failure.
     t0 = world.played[0][0] if world.played else 0.0
     runs = []
-    for start, end, rate, _pcm in world.played:
+    for start, end, _rate, _pcm in world.played:
         if runs and start - runs[-1][1] < 0.15:
             runs[-1][1] = end
         else:
             runs.append([start, end])
     print(f"speaker underflows (late audio callbacks): {world.underflows}")
-    print("robot audio (s from first sound):",
-          ", ".join(f"{a - t0:.2f}-{b - t0:.2f}" for a, b in runs))
+    print(
+        "robot audio (s from first sound):",
+        ", ".join(f"{a - t0:.2f}-{b - t0:.2f}" for a, b in runs),
+    )
     for label, t in world.marks:
         print(f"  mark {label}: {t - t0:.2f}")
     assert not thread.is_alive(), "the robot did not shut down"
@@ -226,8 +240,9 @@ def test_a_whole_visit(robot_env, visitor_voice):
         arrived = time.monotonic()
         world.face_present.set()
         greet_start = world.wait_robot_starts(arrived, timeout_s=20)
-        assert greet_start - arrived >= ml.RT.ENGAGE_DWELL_S, \
-            "greeted before the engagement dwell time"
+        assert (
+            greet_start - arrived >= ml.RT.ENGAGE_DWELL_S
+        ), "greeted before the engagement dwell time"
         world.wait_robot_spoke_then_silent(greet_start, silence_s=0.8)
 
         # --- a question the language model has to answer (slow -> a filler) ---------------
@@ -242,7 +257,7 @@ def test_a_whole_visit(robot_env, visitor_voice):
         # talk over it.
         world.wait_talking_for(asked, min_s=1.5)
         interrupted_at = world.say(visitor_voice["library"])
-        library_answer_end = world.wait_robot_spoke_then_silent(interrupted_at, silence_s=1.0)
+        world.wait_robot_spoke_then_silent(interrupted_at, silence_s=1.0)
 
         # --- a bystander off camera says something that is not for the robot -------------
         world.say(visitor_voice["football"], lips=False)
@@ -272,21 +287,25 @@ def test_a_whole_visit(robot_env, visitor_voice):
     # The greeting is the first line.
     assert turns[0]["speaker"] == "robot"
     # Every visitor sentence was heard, except the bystander's.
-    assert any({"engineering"} <= _words(v) or {"programmes", "programs"} & _words(v)
-               for v in visitor), visitor
+    assert any(
+        {"engineering"} <= _words(v) or {"programmes", "programs"} & _words(v) for v in visitor
+    ), visitor
     assert any("library" in _words(v) for v in visitor), visitor
-    assert not any({"football", "match"} & _words(v) for v in visitor), \
-        f"the bystander's sentence was treated as a question: {visitor}"
+    assert not any(
+        {"football", "match"} & _words(v) for v in visitor
+    ), f"the bystander's sentence was treated as a question: {visitor}"
     assert any("name" in _words(v) for v in visitor), visitor
     # The robot never transcribed its own voice as the visitor's.
     for v in visitor:
-        assert not ({"diplomas", "postgraduate", "faculty's"} & _words(v)), \
-            f"the robot heard itself: {v!r}"
+        assert not (
+            {"diplomas", "postgraduate", "faculty's"} & _words(v)
+        ), f"the robot heard itself: {v!r}"
     # The interrupted answer was cut short, and the library question answered.
     assert any("first floor" in r.lower() for r in robot_lines), robot_lines
     grounded = [r for r in robot_lines if "engineering" in r.lower()]
-    assert grounded and "admissions office" not in grounded[0].lower(), \
-        "the answer was not cut off by the interruption"
+    assert (
+        grounded and "admissions office" not in grounded[0].lower()
+    ), "the answer was not cut off by the interruption"
     # Its name, and the wake word stripped off the question.
     assert any("nova" in r.lower() for r in robot_lines[1:]), robot_lines
     # Declined: nothing was registered.
@@ -300,8 +319,9 @@ def test_a_whole_visit(robot_env, visitor_voice):
 
 def test_woken_by_voice_from_off_camera(robot_env, visitor_voice, monkeypatch):
     world, ml, llm = robot_env
-    oww = pytest.importorskip("openwakeword")
+    pytest.importorskip("openwakeword")
     import model_paths
+
     if not (model_paths.OWW_DIR / "hey_jarvis_v0.1.onnx").exists():
         pytest.skip("hey_jarvis wake word model not downloaded")
     monkeypatch.setattr(ml.RT, "WAKE_WORD_ENGINE", "openwakeword")

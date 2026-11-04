@@ -50,8 +50,9 @@ MATCH_SCORE_THRESHOLD = 85
 MIN_WHOLE_WORD_RATIO = 70
 
 
-def try_correct(word_text: str, probability: float, vocabulary: list[str],
-                 confidence_threshold: float) -> str | None:
+def try_correct(
+    word_text: str, probability: float, vocabulary: list[str], confidence_threshold: float
+) -> str | None:
     """Returns a corrected word string if `word_text` was low-confidence AND a close-enough
     vocabulary match exists, or None otherwise (either it was already confident, there's no
     vocabulary to check against, or nothing matched closely enough) - callers should keep
@@ -82,9 +83,7 @@ def try_correct(word_text: str, probability: float, vocabulary: list[str],
 
     # Second gate - see MIN_WHOLE_WORD_RATIO. WRatio chose the candidate; plain ratio decides
     # whether it is actually the same WORD rather than merely contained in it.
-    whole = fuzz.ratio(
-        utils.default_process(word_text.strip()), utils.default_process(match[0])
-    )
+    whole = fuzz.ratio(utils.default_process(word_text.strip()), utils.default_process(match[0]))
     if whole < MIN_WHOLE_WORD_RATIO:
         return None
     return match[0]
@@ -94,21 +93,24 @@ if __name__ == "__main__":
     vocabulary = ["Cudahy", "Damen", "Loyola", "Piper Hall"]
 
     # A low-confidence near-miss should get corrected...
-    corrected = try_correct("cudahey", probability=0.3, vocabulary=vocabulary,
-                             confidence_threshold=0.5)
+    corrected = try_correct(
+        "cudahey", probability=0.3, vocabulary=vocabulary, confidence_threshold=0.5
+    )
     print(f"Low-confidence near-miss 'cudahey' -> {corrected!r}")
     assert corrected == "Cudahy"
 
     # ...but a word Whisper was already confident about should never be touched, even if it
     # happens to be close to a vocabulary entry.
-    unchanged = try_correct("cudahey", probability=0.9, vocabulary=vocabulary,
-                             confidence_threshold=0.5)
+    unchanged = try_correct(
+        "cudahey", probability=0.9, vocabulary=vocabulary, confidence_threshold=0.5
+    )
     print(f"High-confidence 'cudahey' (left alone) -> {unchanged!r}")
     assert unchanged is None
 
     # A low-confidence word with no real vocabulary match shouldn't be forced into one.
-    no_match = try_correct("banana", probability=0.2, vocabulary=vocabulary,
-                            confidence_threshold=0.5)
+    no_match = try_correct(
+        "banana", probability=0.2, vocabulary=vocabulary, confidence_threshold=0.5
+    )
     print(f"Low-confidence 'banana' (no good match) -> {no_match!r}")
     assert no_match is None
 
@@ -119,8 +121,7 @@ if __name__ == "__main__":
     # was added. See that constant's comment for the measurements.
     real_vocab = ["Lincoln University College", "Alex Tan", "Lina", "Engineering", "Library"]
 
-    nickname = try_correct("Alex", probability=0.3, vocabulary=real_vocab,
-                           confidence_threshold=0.5)
+    nickname = try_correct("Alex", probability=0.3, vocabulary=real_vocab, confidence_threshold=0.5)
     print(f"Short name inside a longer one 'Alex' -> {nickname!r}")
     assert nickname is None, (
         f"'Alex' was rewritten as {nickname!r} - a confident wrong word goes straight into "
@@ -140,5 +141,7 @@ if __name__ == "__main__":
     assert try_correct("how", 0.3, ["How", "Where", "What"], 0.5) == "How"
     print("Real typo/case fixes still applied: 'Enginering', 'Librari', 'engineering', 'how'")
 
-    print("\nOK: only low-confidence words get corrected, only when there's a strong enough "
-          "vocabulary match, and never into a longer word that merely contains what was heard.")
+    print(
+        "\nOK: only low-confidence words get corrected, only when there's a strong enough "
+        "vocabulary match, and never into a longer word that merely contains what was heard."
+    )

@@ -30,11 +30,15 @@ Run: python filler_bank.py    (renders the bank and plays every phrase once)
 
 from __future__ import annotations
 
+import logging
 import random
+import sys
 import threading
 import time
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 # Kept SHORT and content-free on purpose.
 #
@@ -165,7 +169,7 @@ class _PiperAdapter:
                 self._sd.play(pcm, self.sample_rate)
                 self._sd.wait()
             except Exception as exc:  # noqa: BLE001
-                print(f"[filler] playback failed ({exc!r}) - continuing to the real answer.")
+                log.warning(f"[filler] playback failed ({exc!r}) - continuing to the real answer.")
 
         thread = threading.Thread(target=_run, name="filler-playback", daemon=True)
         thread.start()
@@ -179,8 +183,13 @@ class FillerBank:
     Piper), the same speaker device, and feed the echo canceller like everything else.
     """
 
-    def __init__(self, speaker, phrases: tuple[str, ...] = DEFAULT_FILLERS,
-                 verbose: bool = True, volume: float = 1.0):
+    def __init__(
+        self,
+        speaker,
+        phrases: tuple[str, ...] = DEFAULT_FILLERS,
+        verbose: bool = True,
+        volume: float = 1.0,
+    ):
         if not hasattr(speaker, "render"):
             speaker = _PiperAdapter(speaker)
         self.speaker = speaker
@@ -201,8 +210,10 @@ class FillerBank:
         if verbose:
             elapsed_ms = (time.monotonic() - started) * 1000
             total_s = sum(self._clip_duration_s(i) for i in range(len(self._clips)))
-            print(f"[filler] pre-rendered {len(self._clips)} phrase(s) in {elapsed_ms:.0f}ms "
-                  f"({total_s:.1f}s of audio, held in memory)")
+            log.info(
+                f"[filler] pre-rendered {len(self._clips)} phrase(s) in {elapsed_ms:.0f}ms "
+                f"({total_s:.1f}s of audio, held in memory)"
+            )
 
     def _clip_duration_s(self, index: int) -> float:
         return self._clips[index].size / float(max(self.sample_rate, 1))
@@ -236,12 +247,13 @@ class FillerBank:
         try:
             thread = self.speaker.play_clip_async(self._clips[index])
         except Exception as exc:  # noqa: BLE001 - see docstring
-            print(f"[filler] playback failed ({exc!r}) - continuing to the real answer.")
+            log.warning(f"[filler] playback failed ({exc!r}) - continuing to the real answer.")
             return _NULL_PLAYBACK
         return FillerPlayback(thread, self._clip_duration_s(index))
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     from tts_speaker_live import LiveTTSSpeaker
 
     print("Loading the voice...")

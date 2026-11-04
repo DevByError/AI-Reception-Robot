@@ -30,16 +30,14 @@ Intents supported:
     university-related" rule was too restrictive - a real LLM with search access can often
     genuinely help even with questions the scraped knowledge base doesn't cover.
 
-TODO (real implementation later):
-  - classify_intent() only distinguishes "did the knowledge base find something" from "does this
-    look university-related" - a real NLU model/entity extractor for more nuanced intents is
-    future work, same as before. This file's actual real upgrade is answer generation (see
-    AnswerGenerator below) and the general_chat/unknown split, which is the part that needed a
-    real language model to do at all.
+classify_intent() only distinguishes "the knowledge base found something" from "this looks
+university-related". Finer-grained intents would need a proper NLU model.
 """
 
 from __future__ import annotations
 
+import logging
+import sys
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Iterator, Protocol
@@ -47,6 +45,7 @@ from typing import Iterator, Protocol
 from identity import detect_identity_answer
 from knowledge_base import KnowledgeBase, KnowledgeChunk
 
+log = logging.getLogger(__name__)
 
 FALLBACK_ANSWER = (
     "I'm sorry, I don't have that information. "
@@ -64,14 +63,22 @@ FALLBACK_ANSWER = (
 # final answer and the robot never tried a live search. See handle_question() for where this is
 # used.
 _GROUNDED_NO_INFO_PHRASES = (
-    "don't have that information", "do not have that information",
-    "don't have information", "do not have information",
-    "doesn't contain", "does not contain",
-    "doesn't mention", "does not mention",
-    "doesn't say", "does not say",
-    "don't have access to", "do not have access to",
-    "i don't know", "i do not know",
-    "not mentioned in", "not provided in",
+    "don't have that information",
+    "do not have that information",
+    "don't have information",
+    "do not have information",
+    "doesn't contain",
+    "does not contain",
+    "doesn't mention",
+    "does not mention",
+    "doesn't say",
+    "does not say",
+    "don't have access to",
+    "do not have access to",
+    "i don't know",
+    "i do not know",
+    "not mentioned in",
+    "not provided in",
 )
 
 
@@ -106,9 +113,10 @@ class StreamingDialogueResult:
     direct-answer fast path, general conversation), so a caller can log the difference without
     having to care about it otherwise.
     """
+
     intent: Intent
     used_chunks: list[KnowledgeChunk]
-    pieces: "Iterator[str]"
+    pieces: Iterator[str]
     is_streaming: bool
 
 
@@ -147,8 +155,18 @@ _FIRST_SENTENCE_MAX_CHARS = 400  # a model that never emits a terminator can't s
 # Openers that mean "this refers to what we were just talking about". Checked as prefixes on the
 # cleaned question, so "and how long is it" and "what about the fees" both match.
 _FOLLOW_UP_PREFIXES = (
-    "and ", "what about", "how about", "and what", "and how", "ok what", "okay what",
-    "so what", "so how", "then what", "then how", "also",
+    "and ",
+    "what about",
+    "how about",
+    "and what",
+    "and how",
+    "ok what",
+    "okay what",
+    "so what",
+    "so how",
+    "then what",
+    "then how",
+    "also",
 )
 
 # Bare pronouns/determiners standing in for the previous subject. Only meaningful when the
@@ -234,14 +252,14 @@ class AnswerGenerator(Protocol):
 
     def generate_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]) -> str:
         """Called when the knowledge base found relevant chunks. Must answer ONLY from the given
-        chunks and say so plainly if they don't actually answer the question - never invent a
-        university-specific fact that isn't in the retrieved text.
+         chunks and say so plainly if they don't actually answer the question - never invent a
+         university-specific fact that isn't in the retrieved text.
 
-        May raise on failure (a network/API problem) rather than catch-and-return a fallback
-        itself - see handle_question() below for why that responsibility moved to the caller
-       : a single generator-level fallback ("just read the top chunk verbatim") was
-        too blunt, since a raw scraped chunk isn't reliably a complete sentence the way the
-        curated directory chunks are."""
+         May raise on failure (a network/API problem) rather than catch-and-return a fallback
+         itself - see handle_question() below for why that responsibility moved to the caller
+        : a single generator-level fallback ("just read the top chunk verbatim") was
+         too blunt, since a raw scraped chunk isn't reliably a complete sentence the way the
+         curated directory chunks are."""
         ...
 
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
@@ -271,8 +289,19 @@ class MockAnswerGenerator:
     # A tiny hint list standing in for what a real classifier would actually reason about -
     # nowhere near real NLU, just enough to demonstrate the UNKNOWN vs. GENERAL_CHAT split below.
     UNIVERSITY_HINT_WORDS = {
-        "department", "professor", "class", "course", "campus", "building",
-        "office", "faculty", "tuition", "registrar", "dorm", "cafeteria", "menu",
+        "department",
+        "professor",
+        "class",
+        "course",
+        "campus",
+        "building",
+        "office",
+        "faculty",
+        "tuition",
+        "registrar",
+        "dorm",
+        "cafeteria",
+        "menu",
     }
 
     def generate_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]) -> str:
@@ -316,7 +345,7 @@ def strip_general_header(pieces: Iterator[str], info: dict) -> Iterator[str]:
         marker = re.search(r"ANSWER:\s*", buffer, re.IGNORECASE)
         if marker:
             header_done = True
-            rest = buffer[marker.end():]
+            rest = buffer[marker.end() :]
             if rest.strip():
                 info["answered"] = True
                 yield rest
@@ -335,8 +364,9 @@ def strip_general_header(pieces: Iterator[str], info: dict) -> Iterator[str]:
 
 
 class DialogueManager:
-    def __init__(self, kb: KnowledgeBase, answer_generator: AnswerGenerator,
-                 stream_general: bool = True):
+    def __init__(
+        self, kb: KnowledgeBase, answer_generator: AnswerGenerator, stream_general: bool = True
+    ):
         self.kb = kb
         self.answer_generator = answer_generator
         # Stream general (no knowledge-base match) answers too. Before,
@@ -362,7 +392,7 @@ class DialogueManager:
             query = _contextualize(question, history)
             self._prefetched = (self._query_key(query), self.kb.search(query))
         except Exception as exc:  # noqa: BLE001
-            print(f"[dialogue] prefetch skipped ({exc!r}).")
+            log.info(f"[dialogue] prefetch skipped ({exc!r}).")
 
     def _search(self, question: str, history: list[tuple[str, str]] | None) -> list[KnowledgeChunk]:
         query = _contextualize(question, history)
@@ -372,7 +402,9 @@ class DialogueManager:
         return self.kb.search(query)
 
     def _answer_after_failed_grounded(
-        self, question: str, chunks: list[KnowledgeChunk],
+        self,
+        question: str,
+        chunks: list[KnowledgeChunk],
         history: list[tuple[str, str]] | None = None,
     ) -> str:
         """Tiers 2 and 3 of the fallback chain described in handle_question(): the grounded call
@@ -383,14 +415,16 @@ class DialogueManager:
         point of that chain is that it is ONE decision about what the robot says when grounding
         fails, and a second copy for the streaming caller would be a second place to keep in
         sync."""
-        print("[dialogue] falling through to a live search instead of the matched chunk "
-              f"verbatim (question={question!r}).")
+        log.info(
+            "[dialogue] falling through to a live search instead of the matched chunk "
+            f"verbatim (question={question!r})."
+        )
         try:
             _, general_answer = self.answer_generator.classify_and_answer_general(
                 _question_with_context(question, history)
             )
         except Exception as exc:
-            print(f"[dialogue] live-search fallback also failed ({exc!r}).")
+            log.warning(f"[dialogue] live-search fallback also failed ({exc!r}).")
             general_answer = ""
 
         return general_answer or chunks[0].text
@@ -419,8 +453,10 @@ class DialogueManager:
         identity_answer = detect_identity_answer(question)
         if identity_answer is not None:
             return StreamingDialogueResult(
-                intent=Intent.IDENTITY, used_chunks=[],
-                pieces=iter([identity_answer]), is_streaming=False,
+                intent=Intent.IDENTITY,
+                used_chunks=[],
+                pieces=iter([identity_answer]),
+                is_streaming=False,
             )
 
         chunks = self._search(question, history)
@@ -436,16 +472,24 @@ class DialogueManager:
 
         if chunks and not chunks[0].is_direct_answer and streamer is not None:
             return StreamingDialogueResult(
-                intent=Intent.GENERAL_INFO, used_chunks=chunks,
+                intent=Intent.GENERAL_INFO,
+                used_chunks=chunks,
                 pieces=self._stream_grounded(question, chunks, streamer, history),
                 is_streaming=True,
             )
 
         general_streamer = getattr(self.answer_generator, "stream_general_answer", None)
-        if (not chunks and self.stream_general and general_streamer is not None
-                and getattr(self.answer_generator, "supports_general_streaming", True)):
+        if (
+            not chunks
+            and self.stream_general
+            and general_streamer is not None
+            and getattr(self.answer_generator, "supports_general_streaming", True)
+        ):
             result = StreamingDialogueResult(
-                intent=Intent.GENERAL_CHAT, used_chunks=[], pieces=iter(()), is_streaming=True,
+                intent=Intent.GENERAL_CHAT,
+                used_chunks=[],
+                pieces=iter(()),
+                is_streaming=True,
             )
             result.pieces = self._stream_general(question, history, general_streamer, result)
             return result
@@ -455,8 +499,10 @@ class DialogueManager:
         # than reimplementing the remaining branches here: one router, one set of rules.
         result = self.handle_question(question, history, _chunks=chunks)
         return StreamingDialogueResult(
-            intent=result.intent, used_chunks=result.used_chunks,
-            pieces=iter([result.answer]), is_streaming=False,
+            intent=result.intent,
+            used_chunks=result.used_chunks,
+            pieces=iter([result.answer]),
+            is_streaming=False,
         )
 
     def _stream_general(self, question: str, history, streamer, result):
@@ -467,17 +513,24 @@ class DialogueManager:
         try:
             raw = streamer(_question_with_context(question, history))
             for piece in strip_general_header(raw, info):
-                result.intent = Intent.UNKNOWN if info.get("university_related") else Intent.GENERAL_CHAT
+                result.intent = (
+                    Intent.UNKNOWN if info.get("university_related") else Intent.GENERAL_CHAT
+                )
                 yield piece
         except Exception as exc:
-            print(f"[dialogue] streamed general answer failed ({exc!r}).")
+            log.warning(f"[dialogue] streamed general answer failed ({exc!r}).")
         if not info.get("answered"):
             related = info.get("university_related", True)
             result.intent = Intent.UNKNOWN if related else Intent.GENERAL_CHAT
             yield FALLBACK_ANSWER if related else "Sorry, I'm not sure about that one."
 
-    def _stream_grounded(self, question: str, chunks: list[KnowledgeChunk], streamer,
-                         history: list[tuple[str, str]] | None = None):
+    def _stream_grounded(
+        self,
+        question: str,
+        chunks: list[KnowledgeChunk],
+        streamer,
+        history: list[tuple[str, str]] | None = None,
+    ):
         """The streaming half of handle_question()'s three-tier fallback chain.
 
         The safety property that must not be lost: a grounded answer which honestly says "I
@@ -505,7 +558,7 @@ class DialogueManager:
                 if _first_sentence_ready(buffer):
                     break
         except Exception as exc:
-            print(f"[dialogue] streamed grounded answer failed ({exc!r}).")
+            log.warning(f"[dialogue] streamed grounded answer failed ({exc!r}).")
             failed = True
 
         if failed or not buffer.strip() or _looks_like_no_info(buffer):
@@ -518,10 +571,12 @@ class DialogueManager:
         try:
             yield from stream
         except Exception as exc:
-            print(f"[dialogue] streamed answer ended early ({exc!r}) - speaking what arrived.")
+            log.info(f"[dialogue] streamed answer ended early ({exc!r}) - speaking what arrived.")
 
     def handle_question(
-        self, question: str, history: list[tuple[str, str]] | None = None,
+        self,
+        question: str,
+        history: list[tuple[str, str]] | None = None,
         _chunks: list[KnowledgeChunk] | None = None,
     ) -> DialogueResult:
         # Checked FIRST, before the knowledge base or any LLM call - these are fixed facts about
@@ -580,7 +635,7 @@ class DialogueManager:
                     _question_with_context(question, history), chunks
                 )
             except Exception as exc:
-                print(f"[dialogue] grounded-answer generation failed ({exc!r}).")
+                log.warning(f"[dialogue] grounded-answer generation failed ({exc!r}).")
 
             if answer and not _looks_like_no_info(answer):
                 return DialogueResult(intent=Intent.GENERAL_INFO, answer=answer, used_chunks=chunks)
@@ -591,10 +646,8 @@ class DialogueManager:
                 used_chunks=chunks,
             )
 
-        is_university_related, general_answer = (
-            self.answer_generator.classify_and_answer_general(
-                _question_with_context(question, history)
-            )
+        is_university_related, general_answer = self.answer_generator.classify_and_answer_general(
+            _question_with_context(question, history)
         )
         intent = Intent.UNKNOWN if is_university_related else Intent.GENERAL_CHAT
         if general_answer:
@@ -616,25 +669,30 @@ class DialogueManager:
         # general answers in the first place (UniversityOnlyAnswerGenerator). Never leave that
         # as a silent/empty response - use the fixed apology if it looked Lincoln-specific
         # (matches the old behavior for this one case), or a short honest admission otherwise.
-        fallback = FALLBACK_ANSWER if is_university_related else "Sorry, I'm not sure about that one."
+        fallback = (
+            FALLBACK_ANSWER if is_university_related else "Sorry, I'm not sure about that one."
+        )
         return DialogueResult(intent=intent, answer=fallback, used_chunks=[])
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     kb = KnowledgeBase()
-    kb.upsert(KnowledgeChunk(
-        chunk_id="dept-cs",
-        text="The Computer Science department is on the 4th floor.",
-        source_url="https://university.example.edu/departments/cs",
-        last_updated=0.0,
-    ))
+    kb.upsert(
+        KnowledgeChunk(
+            chunk_id="dept-cs",
+            text="The Computer Science department is on the 4th floor.",
+            source_url="https://university.example.edu/departments/cs",
+            last_updated=0.0,
+        )
+    )
 
     dm = DialogueManager(kb, MockAnswerGenerator())
 
     r1 = dm.handle_question("Where is the computer science department?")
     print(f"'Where is X' question -> intent={r1.intent.name}, answer={r1.answer!r}")
     assert r1.intent == Intent.GENERAL_INFO  # answered straight from the KB (floor-only) - no
-                                              # separate wayfinding/directions stage
+    # separate wayfinding/directions stage
     assert "4th floor" in r1.answer
 
     r2 = dm.handle_question("What time does the cafeteria open?")
@@ -669,24 +727,28 @@ if __name__ == "__main__":
             raise AssertionError("classify_and_answer_general() should not be reached here")
 
     fast_kb = KnowledgeBase()
-    fast_kb.upsert(KnowledgeChunk(
-        chunk_id="dept-engineering",
-        text="The Engineering department is on the third floor.",
-        source_url="facilities-directory:engineering",
-        last_updated=0.0,
-        boost=0.15,
-        is_direct_answer=True,
-    ))
+    fast_kb.upsert(
+        KnowledgeChunk(
+            chunk_id="dept-engineering",
+            text="The Engineering department is on the third floor.",
+            source_url="facilities-directory:engineering",
+            last_updated=0.0,
+            boost=0.15,
+            is_direct_answer=True,
+        )
+    )
     # A scraped-style chunk: real page text, NOT a spoken-ready sentence, no flags set. Present
     # so the fast path has something it must NOT mistakenly fire on, and so this test reproduces
     # the real production mix (curated directory + scraped web content) rather than a clean
     # single-chunk KB - the exact blind spot that let the 2026-08-19 ranking regression ship.
-    fast_kb.upsert(KnowledgeChunk(
-        chunk_id="scraped-civil-eng",
-        text="Civil Engineering Department",
-        source_url="https://www.lincoln.edu.my/example-scraped-page/",
-        last_updated=0.0,
-    ))
+    fast_kb.upsert(
+        KnowledgeChunk(
+            chunk_id="scraped-civil-eng",
+            text="Civil Engineering Department",
+            source_url="https://www.lincoln.edu.my/example-scraped-page/",
+            last_updated=0.0,
+        )
+    )
 
     r5 = DialogueManager(fast_kb, ExplodingAnswerGenerator()).handle_question(
         "Where is the engineering department?"
@@ -712,9 +774,7 @@ if __name__ == "__main__":
 
     me = get_identity()
 
-    r6 = DialogueManager(fast_kb, ExplodingAnswerGenerator()).handle_question(
-        "do you have a name?"
-    )
+    r6 = DialogueManager(fast_kb, ExplodingAnswerGenerator()).handle_question("do you have a name?")
     print(f"Identity question -> intent={r6.intent.name}, answer={r6.answer!r}")
     assert r6.intent == Intent.IDENTITY
     assert me.robot_name in r6.answer
@@ -722,14 +782,16 @@ if __name__ == "__main__":
     # Also confirm it wins over a knowledge-base chunk that happens to exist for the same query -
     # identity must never be shadowed by a coincidental KB match, since it's checked first.
     identity_kb = KnowledgeBase()
-    identity_kb.upsert(KnowledgeChunk(
-        chunk_id="decoy",
-        text="This chunk should never be reached for an identity question.",
-        source_url="test:decoy",
-        last_updated=0.0,
-        boost=999.0,  # would win any ranking contest, to make the test meaningful
-        is_direct_answer=True,
-    ))
+    identity_kb.upsert(
+        KnowledgeChunk(
+            chunk_id="decoy",
+            text="This chunk should never be reached for an identity question.",
+            source_url="test:decoy",
+            last_updated=0.0,
+            boost=999.0,  # would win any ranking contest, to make the test meaningful
+            is_direct_answer=True,
+        )
+    )
     r7 = DialogueManager(identity_kb, ExplodingAnswerGenerator()).handle_question(
         "who created you?"
     )
@@ -744,12 +806,14 @@ if __name__ == "__main__":
     # controls exactly one tier's outcome, so a passing test here proves handle_question() itself
     # is escalating correctly - not just that some answer came back.
     fallback_kb = KnowledgeBase()
-    fallback_kb.upsert(KnowledgeChunk(
-        chunk_id="scraped-fragment",
-        text="Lincoln University College",  # a real example of an incomplete raw chunk
-        source_url="https://www.lincoln.edu.my/example/",
-        last_updated=0.0,
-    ))
+    fallback_kb.upsert(
+        KnowledgeChunk(
+            chunk_id="scraped-fragment",
+            text="Lincoln University College",  # a real example of an incomplete raw chunk
+            source_url="https://www.lincoln.edu.my/example/",
+            last_updated=0.0,
+        )
+    )
 
     class RaisesThenSearchGenerator:
         """Tier 1 fails outright (simulates the real 503) - tier 2 (live search) should be used
@@ -803,12 +867,14 @@ if __name__ == "__main__":
     print(f"Both tiers failed -> intent={r10.intent.name}, answer={r10.answer!r}")
     assert r10.answer == "Lincoln University College"  # tier 3: the raw chunk, never a crash
 
-    print("\nOK: grounded-info/general-chat/unknown all route correctly, only genuinely "
-          "university-shaped unanswered questions get the fixed apology, a directory chunk is "
-          "spoken verbatim without ever calling the language model, identity questions about the "
-          "robot itself are answered offline before the knowledge base is even searched, and a "
-          "non-direct-answer chunk that can't be grounded (failure or honest 'I don't know') "
-          "falls through to a live search before ever falling back to a raw fragment.")
+    print(
+        "\nOK: grounded-info/general-chat/unknown all route correctly, only genuinely "
+        "university-shaped unanswered questions get the fixed apology, a directory chunk is "
+        "spoken verbatim without ever calling the language model, identity questions about the "
+        "robot itself are answered offline before the knowledge base is even searched, and a "
+        "non-direct-answer chunk that can't be grounded (failure or honest 'I don't know') "
+        "falls through to a live search before ever falling back to a raw fragment."
+    )
 
     # --- streaming route -----------------------------------------------------
     # handle_question_stream() must make exactly the same decisions as handle_question(), just
@@ -819,13 +885,17 @@ if __name__ == "__main__":
     #      instead of being spoken - the safety property _GROUNDED_NO_INFO_PHRASES exists for
     #   3. a backend with no streaming support still answers, via the blocking path
     stream_kb = KnowledgeBase()
-    stream_kb.upsert(KnowledgeChunk(
-        chunk_id="scraped-msc-cs",
-        text=("The Master of Computer Science is a two year programme with intakes in January "
-              "and September."),
-        source_url="https://www.lincoln.edu.my/example-scraped-page/",
-        last_updated=0.0,
-    ))
+    stream_kb.upsert(
+        KnowledgeChunk(
+            chunk_id="scraped-msc-cs",
+            text=(
+                "The Master of Computer Science is a two year programme with intakes in January "
+                "and September."
+            ),
+            source_url="https://www.lincoln.edu.my/example-scraped-page/",
+            last_updated=0.0,
+        )
+    )
 
     class StreamingGenerator:
         """Yields an answer word by word, the way a real LLM produces one."""
@@ -906,11 +976,13 @@ if __name__ == "__main__":
     )
     assert r14.intent == Intent.IDENTITY and not r14.is_streaming
 
-    print("\nOK: the streaming route makes the same decisions as the blocking one - it really "
-          "streams (so speech can start before generation finishes), it never restarts the "
-          "generation mid-answer, a streamed 'I don't have that information' still falls "
-          "through to a live search instead of being spoken, a backend that can't stream still "
-          "answers, and identity questions are still answered offline first.")
+    print(
+        "\nOK: the streaming route makes the same decisions as the blocking one - it really "
+        "streams (so speech can start before generation finishes), it never restarts the "
+        "generation mid-answer, a streamed 'I don't have that information' still falls "
+        "through to a live search instead of being spoken, a backend that can't stream still "
+        "answers, and identity questions are still answered offline first."
+    )
 
     # A generator that advertises the method but cannot deliver (the ChainAnswerGenerator shape)
     # must fall back to the BLOCKING grounded call, not skip it - see handle_question_stream().
@@ -949,8 +1021,10 @@ if __name__ == "__main__":
     ), "a long question that merely contains 'it' was mistaken for a follow-up"
     assert not looks_like_follow_up("")
 
-    hist = [("visitor", "Tell me about the Master of Computer Science"),
-            ("robot", "It's a two year programme with three intakes.")]
+    hist = [
+        ("visitor", "Tell me about the Master of Computer Science"),
+        ("robot", "It's a two year programme with three intakes."),
+    ]
     # Retrieval gets the subject back...
     searched = _contextualize("how long is it?", hist)
     assert "Master of Computer Science" in searched and "how long is it" in searched, searched
@@ -970,15 +1044,27 @@ if __name__ == "__main__":
 
     # End to end: the follow-up must retrieve the programme chunk, not the library one.
     followup_kb = KnowledgeBase()
-    followup_kb.upsert(KnowledgeChunk(
-        chunk_id="mcs",
-        text=("The Master of Computer Science is a two year programme with intakes in January, "
-              "May and September."),
-        source_url="https://www.lincoln.edu.my/mcs/", last_updated=0.0))
-    followup_kb.upsert(KnowledgeChunk(
-        chunk_id="library", text="The Library is on the second floor.",
-        source_url="facilities-directory:library", last_updated=0.0,
-        boost=0.15, is_direct_answer=True))
+    followup_kb.upsert(
+        KnowledgeChunk(
+            chunk_id="mcs",
+            text=(
+                "The Master of Computer Science is a two year programme with intakes in January, "
+                "May and September."
+            ),
+            source_url="https://www.lincoln.edu.my/mcs/",
+            last_updated=0.0,
+        )
+    )
+    followup_kb.upsert(
+        KnowledgeChunk(
+            chunk_id="library",
+            text="The Library is on the second floor.",
+            source_url="facilities-directory:library",
+            last_updated=0.0,
+            boost=0.15,
+            is_direct_answer=True,
+        )
+    )
 
     class EchoGenerator:
         def generate_grounded_answer(self, question, chunks):
@@ -992,10 +1078,12 @@ if __name__ == "__main__":
     with_context = dm_follow.handle_question("how long is it?", history=hist)
     print(f"Follow-up without history -> {blind.answer!r}")
     print(f"Follow-up with history    -> {with_context.answer!r}")
-    assert "two year programme" in with_context.answer, (
-        "a follow-up still could not find what it was referring to"
-    )
+    assert (
+        "two year programme" in with_context.answer
+    ), "a follow-up still could not find what it was referring to"
 
-    print("\nOK: a follow-up question is searched with the subject it refers to, the robot's own "
-          "answer never pollutes that search, self-contained questions are left alone, and the "
-          "model receives the dialogue so it can resolve the pronoun itself.")
+    print(
+        "\nOK: a follow-up question is searched with the subject it refers to, the robot's own "
+        "answer never pollutes that search, self-contained questions are left alone, and the "
+        "model receives the dialogue so it can resolve the pronoun itself."
+    )

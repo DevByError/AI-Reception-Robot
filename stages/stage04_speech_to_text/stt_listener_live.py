@@ -30,6 +30,7 @@ quit.
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import re
@@ -39,12 +40,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import audio_preprocessing
 import numpy as np
 import sounddevice as sd
-import webrtcvad
-
-import audio_preprocessing
 import vocabulary_correction
+import webrtcvad
 from stt_listener import STTListener, TranscriptChunk, VoiceActivityDetector
 
 # Every tunable in this file now takes its DEFAULT from here instead of being a literal, so a
@@ -66,6 +66,7 @@ def rt_log(tag: str, message: str) -> None:
     """
     if RT.REALTIME_DEBUG:
         print(f"[{tag}] {message}")
+
 
 # The robot's own name and its creator's name are things Whisper has to hear correctly (see
 # identity_vocabulary() below), and since 2026-09-04 they live in MySQL rather than in source,
@@ -102,7 +103,7 @@ SPEECH_START_FRAMES = RT.SPEECH_START_FRAMES  # default 4, ~120ms
 PREROLL_FRAMES = RT.PREROLL_FRAMES  # default 20, ~600ms
 
 MAX_UTTERANCE_S = RT.MAX_UTTERANCE_S  # default 15 - safety cap; forces a transcription
-                                       # even if silence never triggers
+# even if silence never triggers
 # (stuck-open mic, constant background noise misread as speech)
 
 # If VAD confirms "speech started" but trailing silence hits immediately after, the whole clip is
@@ -139,7 +140,7 @@ UNRELIABLE_NO_SPEECH_PROB = 0.6
 # and the _ends_mid_thought check in listen_for_one_utterance).
 PARTIAL_PREVIEW_ENABLED = RT.STREAMING_STT
 PARTIAL_MIN_DURATION_S = RT.PARTIAL_MIN_DURATION_S  # don't preview until the recording is
-                                                    # already this long
+# already this long
 PARTIAL_INTERVAL_S = RT.PARTIAL_INTERVAL_S  # how often to re-preview after that
 
 # How many consecutive IDENTICAL partial transcripts mean the speaker has finished, regardless
@@ -203,10 +204,32 @@ HOTWORDS_MAX_CHARS = 550
 # misrecognitions ("[??] yeah, it's [??] engineering department"). As hotwords they are pure
 # waste: Whisper does not need help hearing "the", biasing toward "Where" nudges it to start
 # transcripts with a question word, and each one spends budget the real proper nouns need.
-_HOTWORD_STOPWORDS = frozenset({
-    "where", "what", "when", "how", "who", "why", "to", "in", "on", "the", "are", "is", "so",
-    "and", "of", "a", "an", "at", "for", "with", "full time",
-})
+_HOTWORD_STOPWORDS = frozenset(
+    {
+        "where",
+        "what",
+        "when",
+        "how",
+        "who",
+        "why",
+        "to",
+        "in",
+        "on",
+        "the",
+        "are",
+        "is",
+        "so",
+        "and",
+        "of",
+        "a",
+        "an",
+        "at",
+        "for",
+        "with",
+        "full time",
+    }
+)
+
 
 def real_hotwords() -> str:
     """The always-present hotwords: the institution, its departments, and the robot's own and its
@@ -263,6 +286,8 @@ def real_initial_prompt() -> str:
         f"{INSTITUTION_PROMPT} My name is {me.robot_name}. "
         f"I was created by {me.creator_name}, who is from {me.creator_country}."
     )
+
+
 INSTITUTION_VOCABULARY = [
     "Lincoln University College",
     "Lincoln",
@@ -343,10 +368,10 @@ INSTITUTION_VOCABULARY = [
 # tuned against. Everything below is bypassed in that case.
 ADAPTIVE_ENDPOINTING_ENABLED = RT.VAD_ENABLED
 
-ENDPOINT_EAGER_MS = RT.MIN_SILENCE_DURATION     # earliest a turn can be called finished, and
-                                                # only with evidence (default 550)
-ENDPOINT_PATIENT_MS = RT.MAX_SILENCE_DURATION   # hard stop - end the turn here no matter what
-                                                # the signals say (default 1500)
+ENDPOINT_EAGER_MS = RT.MIN_SILENCE_DURATION  # earliest a turn can be called finished, and
+# only with evidence (default 550)
+ENDPOINT_PATIENT_MS = RT.MAX_SILENCE_DURATION  # hard stop - end the turn here no matter what
+# the signals say (default 1500)
 # Used when the pitch contour cannot be measured at all (see _pitch_trend()'s "unknown", and the
 # branch that consumes it in listen_for_one_utterance). Deliberately PatientVAD's old fixed
 # 900ms: with no evidence either way, the right behaviour is the one from before this adaptive
@@ -357,8 +382,8 @@ ENDPOINT_UNKNOWN_MS = RT.END_OF_TURN_TIMEOUT  # default 900
 # voiced windows, short enough to only capture the final syllables rather than the whole phrase.
 PITCH_WINDOW_MS = 400
 PITCH_FRAME_MS = 40
-PITCH_MIN_HZ = 70    # below a typical adult male floor
-PITCH_MAX_HZ = 350   # above a typical adult female ceiling
+PITCH_MIN_HZ = 70  # below a typical adult male floor
+PITCH_MAX_HZ = 350  # above a typical adult female ceiling
 # Semitones per second. Below this the contour counts as LEVEL (still talking); above it, the
 # pitch is clearly moving and the phrase is landing. Semitones rather than Hz so one threshold
 # works for a low and a high voice alike - pitch is perceived logarithmically.
@@ -368,16 +393,88 @@ PITCH_LEVEL_ST_PER_S = 1.8
 # someone thinking, not someone finished. Kept to function words that essentially cannot end an
 # English sentence; content words are excluded deliberately, since "where is the library" ends
 # on a noun and is complete.
-_CONTINUATION_WORDS = frozenset({
-    "a", "an", "the", "my", "your", "our", "their", "his", "her", "its",
-    "and", "or", "but", "so", "because", "if", "when", "while", "that", "which", "who",
-    "of", "for", "to", "in", "on", "at", "with", "from", "about", "into", "over", "under",
-    "is", "are", "was", "were", "am", "be", "been", "being",
-    "do", "does", "did", "can", "could", "will", "would", "should", "may", "might", "must",
-    "have", "has", "had", "i", "you", "he", "she", "it", "we", "they",
-    "how", "what", "where", "why", "whose", "there's", "it's",
-    "some", "any", "this", "these", "those", "than", "then", "as", "like",
-})
+_CONTINUATION_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "my",
+        "your",
+        "our",
+        "their",
+        "his",
+        "her",
+        "its",
+        "and",
+        "or",
+        "but",
+        "so",
+        "because",
+        "if",
+        "when",
+        "while",
+        "that",
+        "which",
+        "who",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "at",
+        "with",
+        "from",
+        "about",
+        "into",
+        "over",
+        "under",
+        "is",
+        "are",
+        "was",
+        "were",
+        "am",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "can",
+        "could",
+        "will",
+        "would",
+        "should",
+        "may",
+        "might",
+        "must",
+        "have",
+        "has",
+        "had",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "how",
+        "what",
+        "where",
+        "why",
+        "whose",
+        "there's",
+        "it's",
+        "some",
+        "any",
+        "this",
+        "these",
+        "those",
+        "than",
+        "then",
+        "as",
+        "like",
+    }
+)
 
 
 def _ends_mid_thought(text: str) -> bool:
@@ -425,14 +522,14 @@ def _pitch_trend(audio_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> str:
     times: list[float] = []
     pitches: list[float] = []
     for start in range(0, samples.size - frame_len + 1, frame_len):
-        frame = samples[start:start + frame_len]
+        frame = samples[start : start + frame_len]
         frame = frame - frame.mean()
         energy = float(np.dot(frame, frame))
         if energy < 1e-6:
             continue
 
-        corr = np.correlate(frame, frame, mode="full")[frame_len - 1:]
-        window = corr[min_lag:max_lag + 1]
+        corr = np.correlate(frame, frame, mode="full")[frame_len - 1 :]
+        window = corr[min_lag : max_lag + 1]
         if window.size == 0:
             continue
         peak = int(np.argmax(window))
@@ -466,7 +563,7 @@ class _EndpointState:
     __slots__ = ("checked", "floor_ms", "smart_p", "holding", "holding_reported")
 
     def __init__(self) -> None:
-        self.checked = False           # the contour has had its look at this pause
+        self.checked = False  # the contour has had its look at this pause
         self.floor_ms: int | None = None  # fallback threshold when it could not be read
         self.smart_p: float | None = None  # smart-turn's verdict on this pause, once asked
         # Why this pause was judged "mid-sentence - keep waiting", once it has been. Reported
@@ -493,7 +590,7 @@ class _EndpointState:
 # "can you tell me where the" is still caught by the words. Without the model file (or with
 # TURN_DETECTOR=pitch) the behaviour is exactly the pre-2026-10-27 one.
 SMART_TURN_ENABLED = RT.TURN_DETECTOR == "smart_turn"
-SMART_TURN_THRESHOLD = RT.SMART_TURN_THRESHOLD          # default 0.5
+SMART_TURN_THRESHOLD = RT.SMART_TURN_THRESHOLD  # default 0.5
 SMART_TURN_UNFINISHED = 0.2
 SMART_TURN_MIN_SILENCE_MS = RT.SMART_TURN_MIN_SILENCE_MS  # default 250
 
@@ -509,8 +606,7 @@ def _smart_turn_model():
     return smart_turn.shared_model()
 
 
-def _endpoint_decision(silence_ms: int, audio_chunks: list[bytes],
-                       state: _EndpointState) -> bool:
+def _endpoint_decision(silence_ms: int, audio_chunks: list[bytes], state: _EndpointState) -> bool:
     """Has the speaker finished their turn, given how long this pause has run and the audio
     just before it? Mutates `state` (see above).
 
@@ -541,8 +637,7 @@ def _endpoint_decision(silence_ms: int, audio_chunks: list[bytes],
     # mid-thought" the decision is to wait for the patient limit, and asking the model again on
     # every 30ms frame of that wait would re-open a question that has been answered - and burn
     # a model call plus a transcription per frame doing it.
-    if (state.smart_p is None and not state.checked
-            and silence_ms >= SMART_TURN_MIN_SILENCE_MS):
+    if state.smart_p is None and not state.checked and silence_ms >= SMART_TURN_MIN_SILENCE_MS:
         model = _smart_turn_model()
         if model is not None:
             try:
@@ -551,13 +646,16 @@ def _endpoint_decision(silence_ms: int, audio_chunks: list[bytes],
                 print(f"[turn] smart-turn failed ({exc!r}) - using pitch endpointing.")
                 state.smart_p = -1.0
             else:
-                rt_log("TURN", f"end-of-turn model: {state.smart_p:.2f} after {silence_ms}ms "
-                               f"of silence ({model.last_ms:.0f}ms to decide)")
+                rt_log(
+                    "TURN",
+                    f"end-of-turn model: {state.smart_p:.2f} after {silence_ms}ms "
+                    f"of silence ({model.last_ms:.0f}ms to decide)",
+                )
                 if state.smart_p >= SMART_TURN_THRESHOLD:
                     return True
                 if state.smart_p < SMART_TURN_UNFINISHED:
                     print("[stt] (they sound mid-sentence - waiting longer)")
-                    state.checked = True     # skip the pitch shortcut; patient limit applies
+                    state.checked = True  # skip the pitch shortcut; patient limit applies
                     state.holding = "they sound mid-sentence"
                     return False
 
@@ -583,13 +681,15 @@ def _endpoint_decision(silence_ms: int, audio_chunks: list[bytes],
     state.floor_ms = ENDPOINT_UNKNOWN_MS
     if silence_ms >= ENDPOINT_UNKNOWN_MS:
         return True
-    print("[stt] (cannot read the pitch contour - using the safe "
-          f"{ENDPOINT_UNKNOWN_MS}ms pause)")
+    print(
+        "[stt] (cannot read the pitch contour - using the safe " f"{ENDPOINT_UNKNOWN_MS}ms pause)"
+    )
     return False
 
 
-def _transcribe_now(engine: "WhisperSTTEngine", listener: STTListener,
-                    audio_chunks: list[bytes]) -> str | None:
+def _transcribe_now(
+    engine: WhisperSTTEngine, listener: STTListener, audio_chunks: list[bytes]
+) -> str | None:
     """Transcribes immediately, without consulting the VAD.
 
     listener.listen() (stt_listener.py, deliberately untouched) asks its own VAD whether speech
@@ -643,7 +743,7 @@ def frame_rms(frame: bytes) -> float:
     samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
     if samples.size == 0:
         return 0.0
-    return float(np.sqrt(np.mean(samples ** 2)))
+    return float(np.sqrt(np.mean(samples**2)))
 
 
 class BargeInMonitor:
@@ -671,9 +771,16 @@ class BargeInMonitor:
     `keep_frames` so a long answer cannot accumulate the whole of its own echo in memory.
     """
 
-    def __init__(self, audio_q, vad: "StreamingVAD", stop_event,
-                 rms_threshold: float, min_speech_ms: int = BARGE_IN_MIN_SPEECH_MS,
-                 warmup_ms: int = BARGE_IN_WARMUP_MS, keep_audio: bool | None = None):
+    def __init__(
+        self,
+        audio_q,
+        vad: StreamingVAD,
+        stop_event,
+        rms_threshold: float,
+        min_speech_ms: int = BARGE_IN_MIN_SPEECH_MS,
+        warmup_ms: int = BARGE_IN_WARMUP_MS,
+        keep_audio: bool | None = None,
+    ):
         self.audio_q = audio_q
         self.vad = vad
         self.stop_event = stop_event
@@ -722,10 +829,17 @@ class BargeInMonitor:
                     self.captured_frames = list(recent) if self.keep_audio else []
                     self.stop_event.set()
                     print("[barge-in] someone started talking - stopping.")
-                    rt_log("INTERRUPTION", "user interrupted AI"
-                           + (f" - carrying {len(self.captured_frames)} frame(s) "
-                              f"({len(self.captured_frames) * FRAME_MS}ms) of what they said "
-                              f"into the next listen" if self.captured_frames else ""))
+                    rt_log(
+                        "INTERRUPTION",
+                        "user interrupted AI"
+                        + (
+                            f" - carrying {len(self.captured_frames)} frame(s) "
+                            f"({len(self.captured_frames) * FRAME_MS}ms) of what they said "
+                            f"into the next listen"
+                            if self.captured_frames
+                            else ""
+                        ),
+                    )
                     return
             else:
                 speech_ms = 0  # must be CONTINUOUS speech, not a scattering of loud frames
@@ -765,8 +879,9 @@ class BargeInMonitor:
         return False
 
 
-def calibrate_echo_floor(audio_q, speak, sample_text: str | None = None,
-                         skip_first_s: float = 0.0) -> float:
+def calibrate_echo_floor(
+    audio_q, speak, sample_text: str | None = None, skip_first_s: float = 0.0
+) -> float:
     """Measures how loudly this room returns the robot's OWN voice to the microphone.
 
     Call with nobody speaking. `speak` is any callable that plays a sentence and blocks;
@@ -811,18 +926,14 @@ class PatientVAD(VoiceActivityDetector):
     ("One more." instead of the rest of what was said). 900ms trades a bit of extra latency
     after you stop talking for not truncating you."""
 
-    def is_speech_ended(
-        self, silence_duration_ms: int, threshold_ms: int = 900
-    ) -> bool:
+    def is_speech_ended(self, silence_duration_ms: int, threshold_ms: int = 900) -> bool:
         return super().is_speech_ended(silence_duration_ms, threshold_ms)
 
 
 class StreamingVAD:
     """Thin wrapper around webrtcvad's per-frame speech/non-speech classifier."""
 
-    def __init__(
-        self, aggressiveness: int = VAD_AGGRESSIVENESS, sample_rate: int = SAMPLE_RATE
-    ):
+    def __init__(self, aggressiveness: int = VAD_AGGRESSIVENESS, sample_rate: int = SAMPLE_RATE):
         self._vad = webrtcvad.Vad(aggressiveness)
         self.sample_rate = sample_rate
 
@@ -844,9 +955,7 @@ class ConfidenceReport:
     a wrong guess)."""
 
     total_word_count: int
-    low_confidence_word_count: (
-        int  # flagged with LOW_CONFIDENCE_MARKER, unresolved even after
-    )
+    low_confidence_word_count: int  # flagged with LOW_CONFIDENCE_MARKER, unresolved even after
     # trying vocabulary correction
     corrected_word_count: int  # low-confidence, but resolved via vocabulary_correction
     avg_word_probability: float | None
@@ -858,9 +967,7 @@ class ConfidenceReport:
             return False
         if self.no_speech_prob >= UNRELIABLE_NO_SPEECH_PROB:
             return False
-        return (
-            self.low_confidence_word_count / self.total_word_count
-        ) <= UNRELIABLE_WORD_FRACTION
+        return (self.low_confidence_word_count / self.total_word_count) <= UNRELIABLE_WORD_FRACTION
 
 
 def _add_nvidia_dll_dirs() -> None:
@@ -895,16 +1002,19 @@ def _load_whisper(model_size: str, device: str = "auto"):
 
             if ctranslate2.get_cuda_device_count() > 0:
                 model = WhisperModel(model_size, device="cuda", compute_type="float16")
-                segments, _ = model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32),
-                                               language="en", beam_size=1)
+                segments, _ = model.transcribe(
+                    np.zeros(SAMPLE_RATE, dtype=np.float32), language="en", beam_size=1
+                )
                 list(segments)
                 print("[stt] Whisper is running on the GPU.")
                 return model, "cuda"
             if device == "cuda":
                 print("[stt] STT_DEVICE=cuda but no CUDA GPU is visible - using the CPU.")
         except Exception as exc:  # noqa: BLE001 - any CUDA/driver/DLL problem: use the CPU
-            print(f"[stt] the GPU could not run Whisper ({str(exc)[:120]}) - using the CPU. "
-                  f"For an NVIDIA GPU: pip install -r requirements-gpu.txt")
+            print(
+                f"[stt] the GPU could not run Whisper ({str(exc)[:120]}) - using the CPU. "
+                f"For an NVIDIA GPU: pip install -r requirements-gpu.txt"
+            )
     return WhisperModel(model_size, device="cpu", compute_type="int8"), "cpu"
 
 
@@ -997,9 +1107,7 @@ class WhisperSTTEngine:
         self.hotwords = hotwords or None
         self.vocabulary = vocabulary or []
         self.denoise_enabled = denoise_enabled
-        self.last_confidence: ConfidenceReport | None = (
-            None  # set after every transcribe_stream
-        )
+        self.last_confidence: ConfidenceReport | None = None  # set after every transcribe_stream
 
     def set_hotwords(self, hotwords: str | None) -> None:
         """Replaces the decode-time bias list. Called by Stage 08 once the knowledge base is
@@ -1008,9 +1116,7 @@ class WhisperSTTEngine:
         would have to happen while somebody is standing there)."""
         self.hotwords = (hotwords or "").strip() or None
 
-    def transcribe_stream(
-        self, audio_chunks: list[bytes], locale: str
-    ) -> list[TranscriptChunk]:
+    def transcribe_stream(self, audio_chunks: list[bytes], locale: str) -> list[TranscriptChunk]:
         audio = _pcm_bytes_to_float32(b"".join(audio_chunks))
 
         # Peak normalization always runs now - previously bundled behind
@@ -1036,8 +1142,10 @@ class WhisperSTTEngine:
         except Exception as exc:  # noqa: BLE001 - a GPU failure must not lose the question
             if self.device != "cuda":
                 raise
-            print(f"[stt] Whisper failed on the GPU ({str(exc)[:120]}) - moving it to the CPU "
-                  f"and trying again.")
+            print(
+                f"[stt] Whisper failed on the GPU ({str(exc)[:120]}) - moving it to the CPU "
+                f"and trying again."
+            )
             from faster_whisper import WhisperModel
 
             self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
@@ -1045,7 +1153,7 @@ class WhisperSTTEngine:
             segments = self._decode(audio, language)
         return self._collect(segments)
 
-    def _decode(self, audio: "np.ndarray", language: str) -> list:
+    def _decode(self, audio: np.ndarray, language: str) -> list:
         """One Whisper pass. Returns the segments as a list: faster-whisper decodes lazily while
         they are iterated, so a GPU error only shows up during that iteration."""
         segments, _info = self.model.transcribe(
@@ -1119,13 +1227,9 @@ class WhisperSTTEngine:
             total_word_count=total,
             low_confidence_word_count=low_confidence,
             corrected_word_count=corrected,
-            avg_word_probability=(
-                (sum(word_probs) / len(word_probs)) if word_probs else None
-            ),
+            avg_word_probability=((sum(word_probs) / len(word_probs)) if word_probs else None),
             no_speech_prob=(
-                (sum(no_speech_probs) / len(no_speech_probs))
-                if no_speech_probs
-                else 1.0
+                (sum(no_speech_probs) / len(no_speech_probs)) if no_speech_probs else 1.0
             ),
         )
         return [TranscriptChunk(text=text, is_final=True)]
@@ -1160,22 +1264,31 @@ def _with_cloud_final(engine):
     try:
         from stt_cloud import CloudFinalEngine, CloudSTTError, GroqTranscriber
     except Exception as exc:  # noqa: BLE001
-        print(f"[stt] STT_CLOUD=groq, but the cloud recognizer could not load ({exc}) - "
-              f"using the local Whisper only.")
+        print(
+            f"[stt] STT_CLOUD=groq, but the cloud recognizer could not load ({exc}) - "
+            f"using the local Whisper only."
+        )
         return engine
     try:
         cloud = GroqTranscriber(
-            os.environ.get("GROQ_API_KEY", "").strip(), model=RT.GROQ_STT_MODEL,
-            timeout_s=RT.STT_CLOUD_TIMEOUT_S, sample_rate=SAMPLE_RATE,
+            os.environ.get("GROQ_API_KEY", "").strip(),
+            model=RT.GROQ_STT_MODEL,
+            timeout_s=RT.STT_CLOUD_TIMEOUT_S,
+            sample_rate=SAMPLE_RATE,
         )
     except CloudSTTError as exc:
-        print(f"[stt] STT_CLOUD=groq, but {exc} - using the local Whisper only. Get a free key "
-              f"at https://console.groq.com/keys")
+        print(
+            f"[stt] STT_CLOUD=groq, but {exc} - using the local Whisper only. Get a free key "
+            f"at https://console.groq.com/keys"
+        )
         return engine
-    wrapped = CloudFinalEngine(engine, cloud, ConfidenceReport, TranscriptChunk,
-                               log_transcripts=RT.LOG_TRANSCRIPTS)
-    print(f"[stt] finished questions go to Groq {RT.GROQ_STT_MODEL} (waits at most "
-          f"{RT.STT_CLOUD_TIMEOUT_S:.1f}s), partials and the backup stay on this computer.")
+    wrapped = CloudFinalEngine(
+        engine, cloud, ConfidenceReport, TranscriptChunk, log_transcripts=RT.LOG_TRANSCRIPTS
+    )
+    print(
+        f"[stt] finished questions go to Groq {RT.GROQ_STT_MODEL} (waits at most "
+        f"{RT.STT_CLOUD_TIMEOUT_S:.1f}s), partials and the backup stay on this computer."
+    )
     wrapped.check_in_background()
     return wrapped
 
@@ -1197,8 +1310,13 @@ def identity_vocabulary() -> list[str]:
     single-word creator name where the name and its only part are the same string.
     """
     me = get_identity()
-    terms = [me.robot_name, me.creator_name, *me.creator_name.split(),
-             me.creator_country, me.creator_nationality]
+    terms = [
+        me.robot_name,
+        me.creator_name,
+        *me.creator_name.split(),
+        me.creator_country,
+        me.creator_nationality,
+    ]
     return [t for t in dict.fromkeys(terms) if t]
 
 
@@ -1208,9 +1326,7 @@ def real_vocabulary() -> list[str]:
     return INSTITUTION_VOCABULARY + identity_vocabulary()
 
 
-def _print_result(
-    text: str, confidence: ConfidenceReport | None, prefix: str = "you said"
-) -> None:
+def _print_result(text: str, confidence: ConfidenceReport | None, prefix: str = "you said") -> None:
     if not text:
         print("[stt] (heard something, but no words came out - please try again)")
         return
@@ -1250,8 +1366,11 @@ def _frame_dbfs(frame: bytes) -> float:
 
 
 def _clipped_samples(frame: bytes) -> int:
-    return int(np.count_nonzero(np.abs(np.frombuffer(frame, dtype=np.int16).astype(np.int32))
-                                >= _CLIP_LEVEL))
+    return int(
+        np.count_nonzero(
+            np.abs(np.frombuffer(frame, dtype=np.int16).astype(np.int32)) >= _CLIP_LEVEL
+        )
+    )
 
 
 def _gated_by_voice_level(level_db: float, voice_db: list[float]) -> bool:
@@ -1264,8 +1383,13 @@ def _gated_by_voice_level(level_db: float, voice_db: list[float]) -> bool:
     return level_db < float(np.percentile(voice_db, 90)) - VOICE_GATE_DB
 
 
-def _report_mic_levels(voice_db: list[float], room_db: list[float],
-                       clipped: int = 0, voiced_samples: int = 0, gated: int = 0) -> None:
+def _report_mic_levels(
+    voice_db: list[float],
+    room_db: list[float],
+    clipped: int = 0,
+    voiced_samples: int = 0,
+    gated: int = 0,
+) -> None:
     """One line per question saying how loud the visitor and the room were, so a log shows at a
     glance whether bad transcripts come from the microphone level rather than the recognizer."""
     if not voice_db:
@@ -1281,18 +1405,26 @@ def _report_mic_levels(voice_db: list[float], room_db: list[float],
     if gated:
         line += f", ignored {gated * FRAME_MS / 1000:.1f}s of quieter background voices"
     if clip_share >= CLIPPING_FRACTION:
-        line += (" - the voice is CLIPPING (too loud for the microphone): lower the microphone "
-                 "level to about 50% and turn Microphone Boost off (Windows: Sound settings > "
-                 "Input > device properties)")
+        line += (
+            " - the voice is CLIPPING (too loud for the microphone): lower the microphone "
+            "level to about 50% and turn Microphone Boost off (Windows: Sound settings > "
+            "Input > device properties)"
+        )
     elif voice > LOUD_VOICE_DBFS:
-        line += (" - the microphone level is very high; if words come out wrong, lower it to "
-                 "about 50% and turn Microphone Boost off")
+        line += (
+            " - the microphone level is very high; if words come out wrong, lower it to "
+            "about 50% and turn Microphone Boost off"
+        )
     elif voice < QUIET_VOICE_DBFS:
-        line += (" - the voice is very quiet: raise the microphone level (Windows: Sound "
-                 "settings > Input > Volume) or speak closer")
+        line += (
+            " - the voice is very quiet: raise the microphone level (Windows: Sound "
+            "settings > Input > Volume) or speak closer"
+        )
     elif room is not None and voice - room < MIN_VOICE_ABOVE_ROOM_DB:
-        line += (" - the room is nearly as loud as the voice, so the robot keeps 'hearing "
-                 "speech': move the microphone away from fans or noise")
+        line += (
+            " - the room is nearly as loud as the voice, so the robot keeps 'hearing "
+            "speech': move the microphone away from fans or noise"
+        )
     print(line)
 
 
@@ -1300,7 +1432,7 @@ def listen_for_one_utterance(
     engine: WhisperSTTEngine,
     listener: STTListener,
     vad: StreamingVAD,
-    audio_q: "queue.Queue[bytes]",
+    audio_q: queue.Queue[bytes],
     timeout_s: float | None = None,
     prefix_frames: list[bytes] | None = None,
     on_turn_event=None,
@@ -1354,10 +1486,10 @@ def listen_for_one_utterance(
     wait_started_at = time.monotonic()
     endpoint = _EndpointState()  # see _endpoint_decision()
     paused = False  # whether the CURRENT pause has already been reported, so a mid-turn pause
-                    # is announced once instead of once per 30ms frame
+    # is announced once instead of once per 30ms frame
     last_partial: str | None = None  # see TURN_STABLE_PARTIALS
     stable_partials = 0
-    room_db: list[float] = []   # level of the last ~3s of non-speech before the visitor spoke
+    room_db: list[float] = []  # level of the last ~3s of non-speech before the visitor spoke
     voice_db: list[float] = []  # level of each voiced frame of this utterance
     clipped = voiced_samples = gated = 0  # for the [mic] line
 
@@ -1372,8 +1504,10 @@ def listen_for_one_utterance(
         next_partial_at = time.monotonic() + PARTIAL_INTERVAL_S
         carried_ms = len(prefix_frames) * FRAME_MS
         print(f"[stt] continuing from {carried_ms}ms of audio the visitor interrupted with.")
-        rt_log("TURN", f"resuming mid-utterance with {carried_ms}ms carried over from the "
-                       f"interruption")
+        rt_log(
+            "TURN",
+            f"resuming mid-utterance with {carried_ms}ms carried over from the " f"interruption",
+        )
         _emit("speech_started", f"carried over {carried_ms}ms")
 
     while True:
@@ -1454,18 +1588,20 @@ def listen_for_one_utterance(
         now = time.monotonic()
         elapsed_ms = (now - recording_started_at) * 1000
 
-        if (
-            PARTIAL_PREVIEW_ENABLED
-            and next_partial_at is not None
-            and now >= next_partial_at
-        ):
+        if PARTIAL_PREVIEW_ENABLED and next_partial_at is not None and now >= next_partial_at:
             preview = engine.transcribe_stream(audio_chunks, listener.locale)[0].text
             if preview:
                 print(f'[stt] (partial) "{preview}"')
                 # LOG_TRANSCRIPTS=false keeps the trace usable on an unattended kiosk without
                 # writing a visitor's half-finished words into a shared log - PRIVACY.md.
-                rt_log("STT", f'partial transcript: "{preview}"' if RT.LOG_TRANSCRIPTS
-                       else f"partial transcript: {len(preview)} chars")
+                rt_log(
+                    "STT",
+                    (
+                        f'partial transcript: "{preview}"'
+                        if RT.LOG_TRANSCRIPTS
+                        else f"partial transcript: {len(preview)} chars"
+                    ),
+                )
                 _emit("partial", preview)
             next_partial_at = now + PARTIAL_INTERVAL_S
 
@@ -1498,13 +1634,23 @@ def listen_for_one_utterance(
                 if hasattr(engine, "transcribe_final"):
                     # STT_CLOUD: the preview was the local recognizer's; the finished question
                     # gets the cloud transcript like every other ending does.
-                    preview = (engine.transcribe_final(audio_chunks, listener.locale)[0].text
-                               or preview)
-                rt_log("TURN", f"user finished speaking - transcript unchanged across "
-                               f"{stable_partials + 1} partials (~{quiet_s:.0f}s of no new "
-                               f"words), even though the microphone still reports speech")
-                rt_log("STT", f'final transcript: "{preview}"' if RT.LOG_TRANSCRIPTS
-                       else f"final transcript: {len(preview)} chars")
+                    preview = (
+                        engine.transcribe_final(audio_chunks, listener.locale)[0].text or preview
+                    )
+                rt_log(
+                    "TURN",
+                    f"user finished speaking - transcript unchanged across "
+                    f"{stable_partials + 1} partials (~{quiet_s:.0f}s of no new "
+                    f"words), even though the microphone still reports speech",
+                )
+                rt_log(
+                    "STT",
+                    (
+                        f'final transcript: "{preview}"'
+                        if RT.LOG_TRANSCRIPTS
+                        else f"final transcript: {len(preview)} chars"
+                    ),
+                )
                 _emit("finished", preview)
                 _print_result(preview, engine.last_confidence)
                 _report_mic_levels(voice_db, room_db, clipped, voiced_samples, gated)
@@ -1528,9 +1674,12 @@ def listen_for_one_utterance(
             # it without ever calling Whisper, instead of hallucinating on it, and go back to
             # waiting (with a fresh timeout clock) rather than giving up on the whole call.
             print("[stt] (too short - ignoring, probably not real speech)")
-            rt_log("VAD", f"discarded {elapsed_ms:.0f}ms of audio - below the "
-                          f"{MIN_UTTERANCE_MS}ms minimum, so a cough/click/knock rather than "
-                          f"words. Nothing was sent to the model.")
+            rt_log(
+                "VAD",
+                f"discarded {elapsed_ms:.0f}ms of audio - below the "
+                f"{MIN_UTTERANCE_MS}ms minimum, so a cough/click/knock rather than "
+                f"words. Nothing was sent to the model.",
+            )
             _emit("discarded", f"{elapsed_ms:.0f}ms")
             recording = False
             audio_chunks = []
@@ -1549,8 +1698,11 @@ def listen_for_one_utterance(
         else:
             # listener.listen() itself, except that the finished words come from
             # _final_transcribe (the cloud one with STT_CLOUD) - see _transcribe_now.
-            text = (_transcribe_now(engine, listener, audio_chunks)
-                    if listener.vad.is_speech_ended(silence_ms) else None)
+            text = (
+                _transcribe_now(engine, listener, audio_chunks)
+                if listener.vad.is_speech_ended(silence_ms)
+                else None
+            )
 
         # Second adaptive signal: the words. A grammatically unfinished transcript means the
         # pause was someone thinking, not someone finished - keep the recording running rather
@@ -1563,8 +1715,11 @@ def listen_for_one_utterance(
             and _ends_mid_thought(text)
         ):
             print(f'[stt] (heard "{text}" - sounds unfinished, giving them a moment)')
-            rt_log("TURN", "user still speaking - the transcript ends mid-thought, so this "
-                           "pause is thinking, not finishing")
+            rt_log(
+                "TURN",
+                "user still speaking - the transcript ends mid-thought, so this "
+                "pause is thinking, not finishing",
+            )
             _emit("resumed", "transcript ends mid-thought")
             paused = False  # so the next pause in this same turn is reported again
             # The transcript is better evidence than a contour we could not read, so drop
@@ -1582,10 +1737,19 @@ def listen_for_one_utterance(
             text = _final_transcribe(engine)(audio_chunks, listener.locale)[0].text
 
         if text is not None:
-            rt_log("TURN", f"user finished speaking after {elapsed_ms:.0f}ms of audio and a "
-                           f"{silence_ms}ms pause")
-            rt_log("STT", f'final transcript: "{text}"' if RT.LOG_TRANSCRIPTS
-                   else f"final transcript: {len(text)} chars")
+            rt_log(
+                "TURN",
+                f"user finished speaking after {elapsed_ms:.0f}ms of audio and a "
+                f"{silence_ms}ms pause",
+            )
+            rt_log(
+                "STT",
+                (
+                    f'final transcript: "{text}"'
+                    if RT.LOG_TRANSCRIPTS
+                    else f"final transcript: {len(text)} chars"
+                ),
+            )
             _emit("finished", text)
             _print_result(text, engine.last_confidence)
             _report_mic_levels(voice_db, room_db, clipped, voiced_samples, gated)
@@ -1643,7 +1807,7 @@ def _self_test_endpointing() -> None:
     def _frames(audio: bytes) -> list[bytes]:
         """Split raw PCM into FRAME_MS frames, the way the mic callback delivers it."""
         step = FRAME_SAMPLES * 2
-        return [audio[i:i + step] for i in range(0, len(audio) - step + 1, step)]
+        return [audio[i : i + step] for i in range(0, len(audio) - step + 1, step)]
 
     silence = _frames(np.zeros(SAMPLE_RATE, dtype=np.int16).tobytes())
 
@@ -1663,8 +1827,7 @@ def _self_test_endpointing() -> None:
 
     # 3. THE FIX: an unreadable contour must NOT end the turn eagerly. White noise has no
     #    periodicity, the same way an unvoiced consonant ("...science", "...class") does not.
-    noise = (np.random.default_rng(0).normal(0, 6000, SAMPLE_RATE // 2)
-             .astype(np.int16).tobytes())
+    noise = np.random.default_rng(0).normal(0, 6000, SAMPLE_RATE // 2).astype(np.int16).tobytes()
     assert _pitch_trend(noise) == "unknown", "test audio is not actually unreadable"
     ended, st = _decide(noise, ENDPOINT_EAGER_MS)
     assert not ended, (
@@ -1693,8 +1856,10 @@ def _self_test_endpointing() -> None:
     st.reset()
     assert not st.checked and st.floor_ms is None
 
-    print("[self-test] adaptive endpointing: words + pitch contour OK "
-          f"(eager {ENDPOINT_EAGER_MS}ms, patient {ENDPOINT_PATIENT_MS}ms)")
+    print(
+        "[self-test] adaptive endpointing: words + pitch contour OK "
+        f"(eager {ENDPOINT_EAGER_MS}ms, patient {ENDPOINT_PATIENT_MS}ms)"
+    )
 
 
 def _self_test_smart_turn_policy() -> None:
@@ -1717,7 +1882,7 @@ def _self_test_smart_turn_policy() -> None:
         phase = 2 * np.pi * np.cumsum(np.linspace(start_hz, end_hz, t.size)) / SAMPLE_RATE
         audio = (np.sin(phase) * 20000).astype(np.int16).tobytes()
         step = FRAME_SAMPLES * 2
-        return [audio[i:i + step] for i in range(0, len(audio) - step + 1, step)]
+        return [audio[i : i + step] for i in range(0, len(audio) - step + 1, step)]
 
     falling_tone = _tone(180, 110)
     quiet = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
@@ -1731,26 +1896,41 @@ def _self_test_smart_turn_policy() -> None:
         SMART_TURN_ENABLED = True
         _smart_turn_model = lambda: _Fake(0.9)  # noqa: E731
         st = _EndpointState()
-        assert not _endpoint_decision(SMART_TURN_MIN_SILENCE_MS - FRAME_MS, falling_then(SMART_TURN_MIN_SILENCE_MS - FRAME_MS), st)
-        assert _endpoint_decision(SMART_TURN_MIN_SILENCE_MS, falling_then(SMART_TURN_MIN_SILENCE_MS), st), \
-            "a confident 'finished' should end the turn at the short silence"
+        assert not _endpoint_decision(
+            SMART_TURN_MIN_SILENCE_MS - FRAME_MS,
+            falling_then(SMART_TURN_MIN_SILENCE_MS - FRAME_MS),
+            st,
+        )
+        assert _endpoint_decision(
+            SMART_TURN_MIN_SILENCE_MS, falling_then(SMART_TURN_MIN_SILENCE_MS), st
+        ), "a confident 'finished' should end the turn at the short silence"
 
         _smart_turn_model = lambda: _Fake(0.05)  # noqa: E731
         st = _EndpointState()
-        assert not _endpoint_decision(SMART_TURN_MIN_SILENCE_MS, falling_then(SMART_TURN_MIN_SILENCE_MS), st)
-        assert not _endpoint_decision(ENDPOINT_EAGER_MS, falling_then(ENDPOINT_EAGER_MS), st), \
-            "a confident 'unfinished' must override the falling-pitch shortcut"
-        assert _endpoint_decision(ENDPOINT_PATIENT_MS, falling_then(ENDPOINT_PATIENT_MS), st), "the hard stop still wins"
+        assert not _endpoint_decision(
+            SMART_TURN_MIN_SILENCE_MS, falling_then(SMART_TURN_MIN_SILENCE_MS), st
+        )
+        assert not _endpoint_decision(
+            ENDPOINT_EAGER_MS, falling_then(ENDPOINT_EAGER_MS), st
+        ), "a confident 'unfinished' must override the falling-pitch shortcut"
+        assert _endpoint_decision(
+            ENDPOINT_PATIENT_MS, falling_then(ENDPOINT_PATIENT_MS), st
+        ), "the hard stop still wins"
 
         _smart_turn_model = lambda: _Fake(0.35)  # noqa: E731
         st = _EndpointState()
-        assert not _endpoint_decision(SMART_TURN_MIN_SILENCE_MS, falling_then(SMART_TURN_MIN_SILENCE_MS), st)
-        assert _endpoint_decision(ENDPOINT_EAGER_MS, falling_then(ENDPOINT_EAGER_MS), st), \
-            "an unsure model should leave the decision to the pitch rules"
+        assert not _endpoint_decision(
+            SMART_TURN_MIN_SILENCE_MS, falling_then(SMART_TURN_MIN_SILENCE_MS), st
+        )
+        assert _endpoint_decision(
+            ENDPOINT_EAGER_MS, falling_then(ENDPOINT_EAGER_MS), st
+        ), "an unsure model should leave the decision to the pitch rules"
 
         _smart_turn_model = lambda: None  # noqa: E731 - model file missing
         st = _EndpointState()
-        assert not _endpoint_decision(SMART_TURN_MIN_SILENCE_MS, falling_then(SMART_TURN_MIN_SILENCE_MS), st)
+        assert not _endpoint_decision(
+            SMART_TURN_MIN_SILENCE_MS, falling_then(SMART_TURN_MIN_SILENCE_MS), st
+        )
         assert _endpoint_decision(ENDPOINT_EAGER_MS, falling_then(ENDPOINT_EAGER_MS), st)
     finally:
         SMART_TURN_ENABLED, _smart_turn_model = saved
@@ -1789,8 +1969,9 @@ def _self_test_hotwords() -> None:
     assert tight.startswith("Lina"), tight
 
     assert merge_hotwords("") == ""
-    assert len(merge_hotwords(", ".join(f"Term Number {i}" for i in range(200)))) \
-        <= HOTWORDS_MAX_CHARS
+    assert (
+        len(merge_hotwords(", ".join(f"Term Number {i}" for i in range(200)))) <= HOTWORDS_MAX_CHARS
+    )
 
     print(f"[self-test] hotword biasing OK (budget {HOTWORDS_MAX_CHARS} chars)")
 
@@ -1803,7 +1984,7 @@ def _self_test_barge_in_capture() -> None:
     themselves, which reads like bad speech recognition rather than like dropped audio.
     """
     stop_event = threading.Event()
-    audio_q: "queue.Queue[bytes]" = queue.Queue()
+    audio_q: queue.Queue[bytes] = queue.Queue()
 
     silence = b"\x00\x00" * FRAME_SAMPLES
     # A loud 200Hz tone: periodic enough for webrtcvad to call it speech, and far above any
@@ -1812,8 +1993,13 @@ def _self_test_barge_in_capture() -> None:
     loud = (np.sin(2 * np.pi * 200 * t) * 12000).astype(np.int16).tobytes()
 
     monitor = BargeInMonitor(
-        audio_q, StreamingVAD(), stop_event,
-        rms_threshold=0.01, min_speech_ms=90, warmup_ms=0, keep_audio=True,
+        audio_q,
+        StreamingVAD(),
+        stop_event,
+        rms_threshold=0.01,
+        min_speech_ms=90,
+        warmup_ms=0,
+        keep_audio=True,
     )
     for _ in range(5):
         audio_q.put(silence)
@@ -1842,16 +2028,25 @@ def _self_test_barge_in_capture() -> None:
         "captured audio must be handed over exactly once - replaying it twice would transcribe "
         "and answer the same interruption twice"
     )
-    print(f"[self-test] barge-in keeps the interrupting speech: {len(carried)} frame(s), "
-          f"{len(carried) * FRAME_MS}ms carried over, and only once.")
+    print(
+        f"[self-test] barge-in keeps the interrupting speech: {len(carried)} frame(s), "
+        f"{len(carried) * FRAME_MS}ms carried over, and only once."
+    )
 
     # ...and with keeping switched off, nothing is retained but the interruption still fires.
     stop_event.clear()
-    audio_q2: "queue.Queue[bytes]" = queue.Queue()
+    audio_q2: queue.Queue[bytes] = queue.Queue()
     for _ in range(12):
         audio_q2.put(loud)
-    off = BargeInMonitor(audio_q2, StreamingVAD(), stop_event, rms_threshold=0.01,
-                         min_speech_ms=90, warmup_ms=0, keep_audio=False)
+    off = BargeInMonitor(
+        audio_q2,
+        StreamingVAD(),
+        stop_event,
+        rms_threshold=0.01,
+        min_speech_ms=90,
+        warmup_ms=0,
+        keep_audio=False,
+    )
     off.start()
     deadline = time.monotonic() + 5.0
     while not stop_event.is_set() and time.monotonic() < deadline:
@@ -1872,15 +2067,15 @@ def _self_test_turn_events() -> None:
     t = np.arange(FRAME_SAMPLES) / SAMPLE_RATE
     voiced = (np.sin(2 * np.pi * 200 * t) * 12000).astype(np.int16).tobytes()
 
-    audio_q: "queue.Queue[bytes]" = queue.Queue()
+    audio_q: queue.Queue[bytes] = queue.Queue()
     # "where is the computer science" ... 600ms pause ... "department" ... long pause.
     for _ in range(30):
         audio_q.put(voiced)
-    for _ in range(20):      # 600ms - past the eager threshold, inside the patient one
+    for _ in range(20):  # 600ms - past the eager threshold, inside the patient one
         audio_q.put(silence)
     for _ in range(20):
         audio_q.put(voiced)
-    for _ in range(60):      # 1800ms - past the hard stop, so the turn must end here
+    for _ in range(60):  # 1800ms - past the hard stop, so the turn must end here
         audio_q.put(silence)
 
     class _StubEngine:
@@ -1893,8 +2088,11 @@ def _self_test_turn_events() -> None:
 
         def transcribe_stream(self, audio_chunks, locale):
             self.calls += 1
-            text = ("where is the computer science the" if self.calls <= 2
-                    else "where is the computer science department?")
+            text = (
+                "where is the computer science the"
+                if self.calls <= 2
+                else "where is the computer science department?"
+            )
             return [TranscriptChunk(text=text, is_final=True)]
 
     engine = _StubEngine()
@@ -1910,8 +2108,12 @@ def _self_test_turn_events() -> None:
     globals()["MIN_UTTERANCE_MS"] = 0
     try:
         text = listen_for_one_utterance(
-            engine, STTListener(engine, PatientVAD(), locale="en-US"), StreamingVAD(),
-            audio_q, timeout_s=5.0, on_turn_event=lambda e, d: events.append((e, d)),
+            engine,
+            STTListener(engine, PatientVAD(), locale="en-US"),
+            StreamingVAD(),
+            audio_q,
+            timeout_s=5.0,
+            on_turn_event=lambda e, d: events.append((e, d)),
         )
     finally:
         globals()["MIN_UTTERANCE_MS"] = original_min
@@ -1923,9 +2125,9 @@ def _self_test_turn_events() -> None:
         "the 600ms mid-sentence gap must be reported as a PAUSE - that is the signal a naive "
         f"assistant misreads as the end of a turn. Got {names}"
     )
-    assert names.index("paused") < names.index("finished"), (
-        f"the pause must be reported before the turn ends, not after it. Got {names}"
-    )
+    assert names.index("paused") < names.index(
+        "finished"
+    ), f"the pause must be reported before the turn ends, not after it. Got {names}"
     assert names.count("finished") == 1, f"exactly one turn should have ended. Got {names}"
     resumed = names.count("resumed")
     assert resumed >= 1, (
@@ -1935,7 +2137,7 @@ def _self_test_turn_events() -> None:
     print(f"[self-test] turn events OK: {' -> '.join(names)}")
 
     # ...and the interruption carry-over starts the loop already recording.
-    audio_q2: "queue.Queue[bytes]" = queue.Queue()
+    audio_q2: queue.Queue[bytes] = queue.Queue()
     for _ in range(10):
         audio_q2.put(voiced)
     for _ in range(60):
@@ -1946,15 +2148,19 @@ def _self_test_turn_events() -> None:
     globals()["MIN_UTTERANCE_MS"] = 0  # same wall-clock reason as above
     try:
         listen_for_one_utterance(
-            engine2, STTListener(engine2, PatientVAD(), locale="en-US"), StreamingVAD(),
-            audio_q2, timeout_s=5.0, prefix_frames=[voiced] * 15,
+            engine2,
+            STTListener(engine2, PatientVAD(), locale="en-US"),
+            StreamingVAD(),
+            audio_q2,
+            timeout_s=5.0,
+            prefix_frames=[voiced] * 15,
             on_turn_event=lambda e, d: events2.append((e, d)),
         )
     finally:
         globals()["MIN_UTTERANCE_MS"] = original_min
-    assert events2 and events2[0][0] == "speech_started" and "carried over" in events2[0][1], (
-        f"prefix_frames must begin the utterance already recording. Got {events2[:2]}"
-    )
+    assert (
+        events2 and events2[0][0] == "speech_started" and "carried over" in events2[0][1]
+    ), f"prefix_frames must begin the utterance already recording. Got {events2[:2]}"
     print(f"[self-test] interruption carry-over OK: started with {events2[0][1]}.")
 
 
@@ -1982,7 +2188,7 @@ def _self_test_noisy_room() -> None:
         def is_speech(self, frame_bytes: bytes) -> bool:
             return True
 
-    audio_q: "queue.Queue[bytes]" = queue.Queue()
+    audio_q: queue.Queue[bytes] = queue.Queue()
     for _ in range(700):  # 21 seconds, not one frame of silence in it
         audio_q.put(voiced)
 
@@ -2017,8 +2223,12 @@ def _self_test_noisy_room() -> None:
     globals()["PARTIAL_MIN_DURATION_S"] = 0.0
     try:
         text = listen_for_one_utterance(
-            engine, STTListener(engine, PatientVAD(), locale="en-US"), _DeafVAD(),
-            audio_q, timeout_s=5.0, on_turn_event=lambda e, d: events.append((e, d)),
+            engine,
+            STTListener(engine, PatientVAD(), locale="en-US"),
+            _DeafVAD(),
+            audio_q,
+            timeout_s=5.0,
+            on_turn_event=lambda e, d: events.append((e, d)),
         )
     finally:
         globals()["MIN_UTTERANCE_MS"] = original_min
@@ -2037,15 +2247,17 @@ def _self_test_noisy_room() -> None:
         f"signal did not fire"
     )
     assert [e for e, _ in events].count("finished") == 1
-    print(f"[self-test] a mic that never reports silence: turn ended after {consumed_s:.1f}s of "
-          f"audio on transcript stability alone (the cap is {MAX_UTTERANCE_S:.0f}s).")
+    print(
+        f"[self-test] a mic that never reports silence: turn ended after {consumed_s:.1f}s of "
+        f"audio on transcript stability alone (the cap is {MAX_UTTERANCE_S:.0f}s)."
+    )
 
     # ...and an UNFINISHED sentence gets one partial more than a finished one, then it ends too.
     # Until 2026-10-27 it was never ended this way, so a mic that never reports silence held a
     # visitor whose words stopped on "is" for the full 15-second cap (a real run). Counted in
     # transcriptions, because PARTIAL_INTERVAL_S is zeroed here: one more partial is ~1.5s more of
     # patience on the real robot.
-    audio_q2: "queue.Queue[bytes]" = queue.Queue()
+    audio_q2: queue.Queue[bytes] = queue.Queue()
     for _ in range(700):
         audio_q2.put(voiced)
 
@@ -2066,8 +2278,11 @@ def _self_test_noisy_room() -> None:
     globals()["PARTIAL_MIN_DURATION_S"] = 0.0
     try:
         text2 = listen_for_one_utterance(
-            engine2, STTListener(engine2, PatientVAD(), locale="en-US"), _DeafVAD(),
-            audio_q2, timeout_s=5.0,
+            engine2,
+            STTListener(engine2, PatientVAD(), locale="en-US"),
+            _DeafVAD(),
+            audio_q2,
+            timeout_s=5.0,
         )
     finally:
         globals()["MIN_UTTERANCE_MS"] = original_min
@@ -2080,15 +2295,20 @@ def _self_test_noisy_room() -> None:
             f"an unfinished transcript ended after {engine2.calls} partials; expected "
             f"{TURN_STALL_PARTIALS + 1} - one more than a finished sentence gets, no fewer"
         )
-    print(f"[self-test] ...and a transcript ending mid-thought gets one more partial of patience "
-          f"({engine2.calls} partials), then ends instead of waiting for the "
-          f"{MAX_UTTERANCE_S:.0f}s cap.")
+    print(
+        f"[self-test] ...and a transcript ending mid-thought gets one more partial of patience "
+        f"({engine2.calls} partials), then ends instead of waiting for the "
+        f"{MAX_UTTERANCE_S:.0f}s cap."
+    )
+
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     run_self_tests()
 
     engine = build_stt_engine(
-        initial_prompt=real_initial_prompt(), vocabulary=real_vocabulary(),
+        initial_prompt=real_initial_prompt(),
+        vocabulary=real_vocabulary(),
         hotwords=real_hotwords(),
     )
     listener = STTListener(engine, PatientVAD(), locale="en-US")

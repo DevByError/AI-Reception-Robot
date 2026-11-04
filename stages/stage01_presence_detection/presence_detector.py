@@ -17,8 +17,8 @@ from typing import Protocol
 
 @dataclass
 class DetectedPerson:
-    track_id: int          # temporary identity for the person while they're in frame (used to
-                            # re-link with face recognition later)
+    track_id: int  # temporary identity for the person while they're in frame (used to
+    # re-link with face recognition later)
     bbox: tuple[int, int, int, int]  # (x, y, w, h) in pixels
     distance_estimate: str  # "far" | "near" | "very_near" - a rough estimate from bbox size
 
@@ -48,15 +48,11 @@ class MockFrameSource:
 
 
 class PresenceDetector:
-    """
-    TODO (real implementation later):
-      - replace detect_in_frame() with an actual model (YOLOv8n person class / MediaPipe).
-      - real distance measurement needs camera calibration (bbox size <-> approximate distance
-        in cm).
-    """
+    """Mock presence detector used by the self-tests. The camera-backed versions are
+    presence_detector_live.py (YOLOv8n) and face_presence.py (YuNet)."""
 
     NEAR_THRESHOLD_AREA = 15000  # placeholder: bbox area in pixels considered "close enough to
-                                  # interact"
+    # interact"
 
     def __init__(self, frame_source: FrameSource):
         self.frame_source = frame_source
@@ -108,9 +104,13 @@ if __name__ == "__main__":
     detector = PresenceDetector(MockFrameSource(scripted))
     for i in range(len(scripted)):
         result = detector.step()
-        print(f"[frame {i}] entered={[p.track_id for p in result['entered']]} "
-              f"left={[p.track_id for p in result['left']]} "
-              f"present={[p.track_id for p in result['present']]}")
+        print(
+            f"[frame {i}] entered={[p.track_id for p in result['entered']]} "
+            f"left={[p.track_id for p in result['left']]} "
+            f"present={[p.track_id for p in result['present']]}"
+        )
 
-    print("\nOK: expected sequence was person 1 entering, then person 2 entering (group), "
-          "then 1 and 2 both leaving together.")
+    print(
+        "\nOK: expected sequence was person 1 entering, then person 2 entering (group), "
+        "then 1 and 2 both leaving together."
+    )

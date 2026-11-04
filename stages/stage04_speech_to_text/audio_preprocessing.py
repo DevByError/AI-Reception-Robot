@@ -55,7 +55,7 @@ if __name__ == "__main__":
     sr = 16000
     t = np.linspace(0, 1.0, sr, endpoint=False)
     tone = (0.05 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)  # quiet fake "speech"
-    noise = (0.02 * np.random.randn(sr)).astype(np.float32)         # fake background hiss
+    noise = (0.02 * np.random.randn(sr)).astype(np.float32)  # fake background hiss
     noisy = tone + noise
 
     cleaned = denoise(noisy, sr)
@@ -64,5 +64,7 @@ if __name__ == "__main__":
     assert cleaned.shape == noisy.shape
     assert normalized.shape == noisy.shape
     assert np.max(np.abs(normalized)) <= 0.9 + 1e-6
-    print("OK: denoise()/normalize() run without error and preserve shape - real quality "
-          "comparison needs evaluate_wer.py against your own recordings.")
+    print(
+        "OK: denoise()/normalize() run without error and preserve shape - real quality "
+        "comparison needs evaluate_wer.py against your own recordings."
+    )

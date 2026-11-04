@@ -27,6 +27,7 @@ Press 'r' to register the (single) unresolved face currently in frame, 'q' to qu
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from pathlib import Path
@@ -43,19 +44,18 @@ for p in (STAGE01_DIR, STAGE02_DIR):
 # YOLO (ultralytics, which pulls in PyTorch) is imported only by this file's own demo below:
 # stage08 imports match_faces_to_people() from here, and the robot's default face-based presence
 # must not need PyTorch installed.
-from presence_detector_live import (  # noqa: E402
-    PerTrackPresenceTracker,
-    detect_people,
-)
 from face_memory import FaceMemoryStore  # noqa: E402
-from sface_embedder import SFaceEmbedder  # noqa: E402
-
 from greeting_state_machine import (  # noqa: E402
     ExpressionController,
     GreetingStateMachine,
     Person,
     RobotState,
 )
+from presence_detector_live import (  # noqa: E402
+    PerTrackPresenceTracker,
+    detect_people,
+)
+from sface_embedder import SFaceEmbedder  # noqa: E402
 
 # How often to run face recognition - same reasoning as stage02: embeddings are more expensive
 # than person detection/tracking, a few checks per second is enough.
@@ -144,9 +144,7 @@ def draw_overlay(
             label = f"#{p.track_id} unknown"
         color = (0, 200, 0) if name else (0, 165, 255)
         cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-        cv2.putText(
-            frame, label, (x, max(0, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2
-        )
+        cv2.putText(frame, label, (x, max(0, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     cv2.putText(
         frame,
         f"state: {state.name}",
@@ -169,6 +167,7 @@ def draw_overlay(
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     print("Loading YOLOv8n + YuNet + SFace models...")
     # Point at stage01's copy explicitly (reuses its already-downloaded weights, and downloads
     # there if missing) instead of a bare "yolov8n.pt", which depends on the current working
@@ -183,12 +182,8 @@ if __name__ == "__main__":
     sm = GreetingStateMachine(ExpressionController(), LiveTTSSpeaker())
 
     resolved_names: dict[int, str | None] = {}  # track_id -> known name, once matched
-    last_embedding_by_track: dict[int, object] = (
-        {}
-    )  # track_id -> most recent face embedding
-    pending_since: dict[int, float] = (
-        {}
-    )  # track_id -> when presence confirmed them, while
+    last_embedding_by_track: dict[int, object] = {}  # track_id -> most recent face embedding
+    pending_since: dict[int, float] = {}  # track_id -> when presence confirmed them, while
     # still waiting on recognition to resolve (or
     # time out) before they're actually greeted
     ready_to_greet: set[int] = set()  # track_ids finalized (known or genuinely
@@ -199,9 +194,7 @@ if __name__ == "__main__":
     if not cap.isOpened():
         raise RuntimeError("Could not open camera index=0")
 
-    print(
-        "Live greeting running. Press 'r' to register the face in frame, 'q' to quit."
-    )
+    print("Live greeting running. Press 'r' to register the face in frame, 'q' to quit.")
     frame_count = 0
     last_people: list = []
 
@@ -253,9 +246,7 @@ if __name__ == "__main__":
             # treat them as a genuine stranger rather than holding the greeting forever.
             now = time.monotonic()
             for tid in [
-                t
-                for t, since in pending_since.items()
-                if now - since >= RECOGNITION_WAIT_S
+                t for t, since in pending_since.items() if now - since >= RECOGNITION_WAIT_S
             ]:
                 pending_since.pop(tid)
                 ready_to_greet.add(tid)
@@ -283,9 +274,7 @@ if __name__ == "__main__":
                     listening_since = None
 
             last_people = people
-            frame = draw_overlay(
-                frame, last_people, resolved_names, set(pending_since), sm.state
-            )
+            frame = draw_overlay(frame, last_people, resolved_names, set(pending_since), sm.state)
             cv2.imshow("Stage 03 - live proactive greeting (press q to quit)", frame)
 
             key = cv2.waitKey(1) & 0xFF
@@ -310,9 +299,7 @@ if __name__ == "__main__":
                         )
                     else:
                         name = input("[robot] What's your name? ").strip() or "Guest"
-                        store.register(
-                            name=name, embeddings=[embedding], consent_given=True
-                        )
+                        store.register(name=name, embeddings=[embedding], consent_given=True)
                         resolved_names[tid] = name
                         print(
                             f"[robot] Got it, {name} - I'll greet you personally next time "

@@ -4,9 +4,7 @@ Stage 09 - Logging & Monitoring
 Goal: log every interaction (without raw biometric data - see docs/PRIVACY.md) for quality
 purposes, and measure latency per stage to know which part of the real system is slow.
 
-TODO (real implementation later):
-  - send logs to a rotating file or a centralized monitoring system.
-  - add alerting if any stage's latency exceeds a threshold (e.g. STT > 3s).
+Log rotation and latency alerting are not implemented yet (see the roadmap in README.md).
 """
 
 from __future__ import annotations
@@ -23,6 +21,7 @@ class InteractionLog:
     images/face embeddings. person_id here is an internal identifier (uuid), not a name or
     direct identifying data in the log itself.
     """
+
     interaction_id: str
     person_ids_seen: list[str]
     question_text: str | None
@@ -74,5 +73,7 @@ if __name__ == "__main__":
     print(f"  total_ms={total:.1f}")
 
     assert set(log.stage_latencies_ms.keys()) == {"stt", "dialogue", "tts"}
-    print("\nOK: measuring per-stage latency + building an interaction log without raw "
-          "biometric data works correctly.")
+    print(
+        "\nOK: measuring per-stage latency + building an interaction log without raw "
+        "biometric data works correctly."
+    )

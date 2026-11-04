@@ -24,8 +24,11 @@ CASES = {
     "face_memory": ["stages/stage02_face_recognition/face_memory.py"],
     "sface_embedder": ["stages/stage02_face_recognition/sface_embedder.py"],
     "database_sqlite": ["stages/stage02_face_recognition/robot_db.py", "--self-test", "--sqlite"],
-    "listener": ["-c", "import sys; sys.path.insert(0, 'stages/stage04_speech_to_text'); "
-                       "import stt_listener_live as s; s.run_self_tests()"],
+    "listener": [
+        "-c",
+        "import sys; sys.path.insert(0, 'stages/stage04_speech_to_text'); "
+        "import stt_listener_live as s; s.run_self_tests()",
+    ],
 }
 
 
@@ -33,10 +36,16 @@ CASES = {
 def test_module_self_test(name, tmp_path):
     env = dict(os.environ)
     env["LUC_DB_BACKEND"] = "sqlite"
-    env["LUC_DB_SQLITE_PATH"] = str(tmp_path / "robot.db")   # never the real data/ folder
+    env["LUC_DB_SQLITE_PATH"] = str(tmp_path / "robot.db")  # never the real data/ folder
     env["PYTHONIOENCODING"] = "utf-8"
-    proc = subprocess.run([sys.executable, *CASES[name]], cwd=ROOT, env=env,
-                          capture_output=True, text=True, timeout=600)
+    proc = subprocess.run(
+        [sys.executable, *CASES[name]],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
     tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-25:])
     if proc.returncode != 0 and "SKIPPED" in proc.stdout:
         pytest.skip(tail)

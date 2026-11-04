@@ -49,8 +49,8 @@ def is_facing(landmarks, max_yaw: float) -> bool:
 
 @dataclass
 class _State:
-    since: float | None = None      # when near+facing started holding
-    last_ok: float | None = None    # last time near+facing was observed
+    since: float | None = None  # when near+facing started holding
+    last_ok: float | None = None  # last time near+facing was observed
     bad_since: float | None = None  # start of the current run of NOT near+facing observations
 
 
@@ -64,7 +64,7 @@ class EngagementTracker:
     """
 
     GRACE_S = 0.5
-    STALE_S = 2.0   # an engagement older than this with no fresh "ok" observation has lapsed
+    STALE_S = 2.0  # an engagement older than this with no fresh "ok" observation has lapsed
 
     def __init__(self, min_face_fraction: float, max_yaw: float, dwell_s: float):
         self.min_face_fraction = min_face_fraction
@@ -72,13 +72,15 @@ class EngagementTracker:
         self.dwell_s = dwell_s
         self._states: dict[int, _State] = {}
 
-    def observe(self, track_id: int, bbox, landmarks, frame_width: int,
-                now: float | None = None) -> bool:
+    def observe(
+        self, track_id: int, bbox, landmarks, frame_width: int, now: float | None = None
+    ) -> bool:
         """Feed one observation of a tracked face. Returns whether this track is engaged now."""
         now = time.monotonic() if now is None else now
         state = self._states.setdefault(track_id, _State())
         ok = is_near(bbox, frame_width, self.min_face_fraction) and is_facing(
-            landmarks, self.max_yaw)
+            landmarks, self.max_yaw
+        )
         if ok:
             if state.since is None:
                 state.since = now
@@ -106,8 +108,12 @@ class EngagementTracker:
         """Near and facing at the latest observation (no dwell requirement)."""
         now = time.monotonic() if now is None else now
         state = self._states.get(track_id)
-        return bool(state and state.bad_since is None and state.last_ok is not None
-                    and now - state.last_ok <= self.STALE_S)
+        return bool(
+            state
+            and state.bad_since is None
+            and state.last_ok is not None
+            and now - state.last_ok <= self.STALE_S
+        )
 
     def forget(self, track_id: int) -> None:
         self._states.pop(track_id, None)

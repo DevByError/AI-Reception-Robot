@@ -19,11 +19,15 @@ for i, dev in enumerate(devices):
     if i == default_out:
         marker.append("DEFAULT OUTPUT")
     tag = f"  <-- {', '.join(marker)}" if marker else ""
-    print(f"[{i}] {dev['name']}  "
-          f"(in={dev['max_input_channels']}, out={dev['max_output_channels']}){tag}")
+    print(
+        f"[{i}] {dev['name']}  "
+        f"(in={dev['max_input_channels']}, out={dev['max_output_channels']}){tag}"
+    )
 
 print(f"\nDefault input index: {default_in}")
 print(f"Default output index: {default_out}")
-print("\nIf the default output above is not your laptop speakers (e.g. it's an HDMI/digital "
-      "output or a disconnected device), note its correct index from the list and pass it to "
-      "test_speaker_device.py")
+print(
+    "\nIf the default output above is not your laptop speakers (e.g. it's an HDMI/digital "
+    "output or a disconnected device), note its correct index from the list and pass it to "
+    "test_speaker_device.py"
+)

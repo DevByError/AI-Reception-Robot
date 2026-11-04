@@ -51,7 +51,6 @@ from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
-
 from stt_listener_live import (
     FRAME_MS,
     FRAME_SAMPLES,
@@ -129,9 +128,11 @@ def _level_bar(peak: int, width: int = 20) -> str:
 def _print_input_device() -> None:
     try:
         info = sd.query_devices(kind="input")
-        print(f"Input device: {info['name']!r} (default) - if this isn't your mic, run "
-              f"stage00_setup/list_audio_devices.py to find the right one and set "
-              f"sd.default.device before recording.")
+        print(
+            f"Input device: {info['name']!r} (default) - if this isn't your mic, run "
+            f"stage00_setup/list_audio_devices.py to find the right one and set "
+            f"sd.default.device before recording."
+        )
     except Exception as exc:  # pragma: no cover - purely informational
         print(f"(couldn't query the default input device: {exc})")
 
@@ -166,7 +167,10 @@ def record_one() -> bytes | None:
     frame_i = 0
 
     stream = sd.RawInputStream(
-        samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES, dtype="int16", channels=1,
+        samplerate=SAMPLE_RATE,
+        blocksize=FRAME_SAMPLES,
+        dtype="int16",
+        channels=1,
         callback=_on_audio,
     )
     with stream:

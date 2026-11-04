@@ -32,12 +32,12 @@ Press 'q' in the preview window to stop early.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import time
 
 import cv2
 import numpy as np
-
 import robot_db
 from face_memory import FaceMemoryStore
 from sface_embedder import (
@@ -58,8 +58,7 @@ def _rule(title: str) -> None:
 
 def _summary(name: str, values: list[float], fmt: str = "8.2f") -> str:
     a = np.asarray(values, dtype=float)
-    return (f"  {name:22s} min={a.min():{fmt}}  median={np.median(a):{fmt}}  "
-            f"max={a.max():{fmt}}")
+    return f"  {name:22s} min={a.min():{fmt}}  median={np.median(a):{fmt}}  " f"max={a.max():{fmt}}"
 
 
 def check_database() -> tuple[object | None, list[dict]]:
@@ -67,10 +66,12 @@ def check_database() -> tuple[object | None, list[dict]]:
     _rule("1. MySQL")
     db = robot_db.connect_or_none(verbose=True)
     if db is None:
-        print("\n  VERDICT: no database. Enrolled faces are not being loaded at all, and "
-              "anybody\n  registered in a session is forgotten when it exits. Fix the "
-              "connection first\n  (.env in the project root) - nothing below this can work "
-              "without it.")
+        print(
+            "\n  VERDICT: no database. Enrolled faces are not being loaded at all, and "
+            "anybody\n  registered in a session is forgotten when it exits. Fix the "
+            "connection first\n  (.env in the project root) - nothing below this can work "
+            "without it."
+        )
         return None, []
 
     print(f"  row counts: {db.counts()}")
@@ -78,15 +79,19 @@ def check_database() -> tuple[object | None, list[dict]]:
     _rule("2. Who is enrolled")
     people = db.load_people()
     if not people:
-        print("  Nobody is enrolled. The robot has never been given a face to remember, so "
-              "being\n  greeted as a stranger is correct behaviour - say yes when it asks to "
-              "remember you.")
+        print(
+            "  Nobody is enrolled. The robot has never been given a face to remember, so "
+            "being\n  greeted as a stranger is correct behaviour - say yes when it asks to "
+            "remember you."
+        )
         return db, []
 
     for p in people:
         last = time.strftime("%Y-%m-%d %H:%M", time.localtime(p["last_seen"]))
-        print(f"  {p['name']!r}: {len(p['embeddings'])} sample(s), {p['visit_count']} visit(s), "
-              f"last seen {last}, consent={p['consent_given']}")
+        print(
+            f"  {p['name']!r}: {len(p['embeddings'])} sample(s), {p['visit_count']} visit(s), "
+            f"last seen {last}, consent={p['consent_given']}"
+        )
         if not p["embeddings"]:
             print("     ^ NO SAMPLES - this person can never be recognized. Re-enroll them.")
 
@@ -100,21 +105,28 @@ def check_database() -> tuple[object | None, list[dict]]:
     for p in people:
         samples = p["embeddings"]
         if len(samples) < 2:
-            print(f"  {p['name']!r}: only {len(samples)} sample - nothing to cross-check. One "
-                  f"sample is\n     fragile; it has to match you at whatever angle you happen "
-                  f"to arrive at.")
+            print(
+                f"  {p['name']!r}: only {len(samples)} sample - nothing to cross-check. One "
+                f"sample is\n     fragile; it has to match you at whatever angle you happen "
+                f"to arrive at."
+            )
             continue
         sims = [
             embedder.similarity(samples[i], samples[j])
-            for i in range(len(samples)) for j in range(i + 1, len(samples))
+            for i in range(len(samples))
+            for j in range(i + 1, len(samples))
         ]
         worst = min(sims)
-        print(f"  {p['name']!r}: samples agree with each other "
-              f"min={worst:.3f} mean={np.mean(sims):.3f} (threshold {COSINE_MATCH_THRESHOLD})")
+        print(
+            f"  {p['name']!r}: samples agree with each other "
+            f"min={worst:.3f} mean={np.mean(sims):.3f} (threshold {COSINE_MATCH_THRESHOLD})"
+        )
         if worst < COSINE_MATCH_THRESHOLD:
-            print("     ^ SOME STORED SAMPLES DO NOT EVEN MATCH EACH OTHER. They were captured "
-                  "badly.\n       Delete this person and re-enroll them in good light, close "
-                  "to the camera.")
+            print(
+                "     ^ SOME STORED SAMPLES DO NOT EVEN MATCH EACH OTHER. They were captured "
+                "badly.\n       Delete this person and re-enroll them in good light, close "
+                "to the camera."
+            )
     return db, people
 
 
@@ -124,9 +136,7 @@ def watch_camera(db, people: list[dict], seconds: float, size: tuple[int, int] |
     embedder = SFaceEmbedder()
     # The same store the orchestrator builds, so find_match() here behaves exactly as it does
     # in the running robot - including the best-match selection and the ambiguity margin.
-    store = FaceMemoryStore(
-        is_match=embedder.is_match, score=embedder.similarity, db=db
-    )
+    store = FaceMemoryStore(is_match=embedder.is_match, score=embedder.similarity, db=db)
 
     cap = cv2.VideoCapture(0)
     if size is not None:
@@ -148,8 +158,10 @@ def watch_camera(db, people: list[dict], seconds: float, size: tuple[int, int] |
         print("  The camera opened but returned no frames.")
         cap.release()
         return
-    print(f"  capturing {probe.shape[1]}x{probe.shape[0]} for {seconds:.0f}s - "
-          f"stand where you normally stand when you talk to the robot.\n")
+    print(
+        f"  capturing {probe.shape[1]}x{probe.shape[0]} for {seconds:.0f}s - "
+        f"stand where you normally stand when you talk to the robot.\n"
+    )
 
     started = time.time()
     while time.time() - started < seconds:
@@ -188,10 +200,26 @@ def watch_camera(db, people: list[dict], seconds: float, size: tuple[int, int] |
 
             x, y, w, h = det.bbox
             cv2.rectangle(frame, (x, y), (x + w, y + h), colour, 2)
-            cv2.putText(frame, label, (x, max(14, y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        colour, 1, cv2.LINE_AA)
-            cv2.putText(frame, f"{det.width}px sharp {det.sharpness:.0f} conf {det.score:.2f}",
-                        (x, y + h + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)
+            cv2.putText(
+                frame,
+                label,
+                (x, max(14, y - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                colour,
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame,
+                f"{det.width}px sharp {det.sharpness:.0f} conf {det.score:.2f}",
+                (x, y + h + 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                colour,
+                1,
+                cv2.LINE_AA,
+            )
 
         cv2.imshow("face recognition diagnostic (press q to stop)", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -212,10 +240,14 @@ def watch_camera(db, people: list[dict], seconds: float, size: tuple[int, int] |
         print(_summary("face width (px)", widths))
         print(_summary("sharpness", sharpnesses))
         print(_summary("detector confidence", scores))
-        print(f"\n  gates: match needs width>={MIN_FACE_WIDTH_PX} sharp>={MIN_BLUR_VARIANCE:.0f} "
-              f"conf>={DETECTION_SCORE_THRESHOLD}")
-        print(f"         enroll needs width>={MIN_ENROLL_FACE_WIDTH_PX} "
-              f"sharp>={MIN_ENROLL_BLUR_VARIANCE:.0f} conf>={MIN_ENROLL_DETECTION_SCORE}")
+        print(
+            f"\n  gates: match needs width>={MIN_FACE_WIDTH_PX} sharp>={MIN_BLUR_VARIANCE:.0f} "
+            f"conf>={DETECTION_SCORE_THRESHOLD}"
+        )
+        print(
+            f"         enroll needs width>={MIN_ENROLL_FACE_WIDTH_PX} "
+            f"sharp>={MIN_ENROLL_BLUR_VARIANCE:.0f} conf>={MIN_ENROLL_DETECTION_SCORE}"
+        )
         for name, sims in best_per_person.items():
             if sims:
                 print(_summary(f"similarity to {name}", sims, "8.3f"))
@@ -227,14 +259,18 @@ def _verdict(detections, usable, matched, widths, sharpnesses, people, matched_n
     """Names the single most likely blocker, rather than leaving the numbers to be interpreted."""
     _rule("Verdict")
     if not detections:
-        print("  No face was detected at all, so recognition never even started. That is a\n"
-              "  framing or lighting problem: check the camera is pointed at you, that you "
-              "are lit\n  from the front rather than backlit by a window, and that nothing is "
-              "covering the lens.")
-        print("\n  NOTE: YuNet will also report confident 'faces' on background clutter - if "
-              "the\n  numbers above look like a face when nobody is in frame, that is what "
-              "you are\n  seeing, and the quality gate is what stops the robot matching "
-              "against it.")
+        print(
+            "  No face was detected at all, so recognition never even started. That is a\n"
+            "  framing or lighting problem: check the camera is pointed at you, that you "
+            "are lit\n  from the front rather than backlit by a window, and that nothing is "
+            "covering the lens."
+        )
+        print(
+            "\n  NOTE: YuNet will also report confident 'faces' on background clutter - if "
+            "the\n  numbers above look like a face when nobody is in frame, that is what "
+            "you are\n  seeing, and the quality gate is what stops the robot matching "
+            "against it."
+        )
         return
 
     if not usable:
@@ -254,8 +290,10 @@ def _verdict(detections, usable, matched, widths, sharpnesses, people, matched_n
                 f"drops its shutter speed and every small\n     movement smears), or motion - "
                 f"hold still and turn a light on."
             )
-        print("  Every face was REJECTED BEFORE MATCHING, so the robot never looked you up.\n"
-              "  This is the cause that looks exactly like a broken database but is not:")
+        print(
+            "  Every face was REJECTED BEFORE MATCHING, so the robot never looked you up.\n"
+            "  This is the cause that looks exactly like a broken database but is not:"
+        )
         for r in reasons or ["the quality gate rejected them - see the numbers above."]:
             print(f"   - {r}")
         return
@@ -265,20 +303,24 @@ def _verdict(detections, usable, matched, widths, sharpnesses, people, matched_n
         rate = matched / usable
         print(f"  Recognition WORKS - {matched}/{usable} usable faces matched ({who}).")
         if rate < 0.6:
-            print(f"\n  But only {rate:.0%} of usable frames matched, which is marginal. The "
-                  f"orchestrator\n  needs IDENTITY_VOTE_REQUIRED separate recognitions to agree "
-                  f"before it will use a\n  name, so at this hit rate it will sometimes greet "
-                  f"you as a stranger anyway.\n  Re-enrolling in better light would raise it.")
+            print(
+                f"\n  But only {rate:.0%} of usable frames matched, which is marginal. The "
+                f"orchestrator\n  needs IDENTITY_VOTE_REQUIRED separate recognitions to agree "
+                f"before it will use a\n  name, so at this hit rate it will sometimes greet "
+                f"you as a stranger anyway.\n  Re-enrolling in better light would raise it."
+            )
         return
 
     print("  Faces passed the quality gate but matched NOBODY. Recognition ran and said no.")
     if people:
-        print("  Either the person in front of the camera is not one of the enrolled people, or\n"
-              "  the stored samples no longer look like them (a new beard, glasses, very\n"
-              "  different lighting from the day they enrolled). Re-enrolling is the fix.\n"
-              "  Check the 'similarity to ...' numbers above: close to but under "
-              f"{COSINE_MATCH_THRESHOLD} means the\n  samples are stale; near zero means it is "
-              "a genuinely different face.")
+        print(
+            "  Either the person in front of the camera is not one of the enrolled people, or\n"
+            "  the stored samples no longer look like them (a new beard, glasses, very\n"
+            "  different lighting from the day they enrolled). Re-enrolling is the fix.\n"
+            "  Check the 'similarity to ...' numbers above: close to but under "
+            f"{COSINE_MATCH_THRESHOLD} means the\n  samples are stale; near zero means it is "
+            "a genuinely different face."
+        )
 
 
 def calibrate(db, people: list[dict], seconds: float, size: tuple[int, int] | None) -> None:
@@ -319,8 +361,10 @@ def calibrate(db, people: list[dict], seconds: float, size: tuple[int, int] | No
         cap.release()
         return
     print(f"  capturing {probe.shape[1]}x{probe.shape[0]} for {seconds:.0f}s.")
-    print("  Look at the camera and move the way you normally would - turn your head, lean in\n"
-          "  and back. The point is to collect BOTH sharp and blurry frames of the same face.\n")
+    print(
+        "  Look at the camera and move the way you normally would - turn your head, lean in\n"
+        "  and back. The point is to collect BOTH sharp and blurry frames of the same face.\n"
+    )
 
     samples: list[tuple[float, float, int]] = []  # (sharpness, best similarity, width)
     started = time.time()
@@ -333,7 +377,8 @@ def calibrate(db, people: list[dict], seconds: float, size: tuple[int, int] | No
                 continue  # size is a separate gate; do not mix the two questions
             best = max(
                 max(embedder.similarity(det.embedding, s) for s in p["embeddings"])
-                for p in people if p["embeddings"]
+                for p in people
+                if p["embeddings"]
             )
             samples.append((det.sharpness, best, det.width))
         cv2.imshow("calibration (press q to stop)", frame)
@@ -343,8 +388,10 @@ def calibrate(db, people: list[dict], seconds: float, size: tuple[int, int] | No
     cv2.destroyAllWindows()
 
     if len(samples) < 10:
-        print(f"  Only {len(samples)} usable detection(s) - not enough to conclude anything.\n"
-              f"  Make sure your face is in frame and at least {MIN_FACE_WIDTH_PX}px wide.")
+        print(
+            f"  Only {len(samples)} usable detection(s) - not enough to conclude anything.\n"
+            f"  Make sure your face is in frame and at least {MIN_FACE_WIDTH_PX}px wide."
+        )
         return
 
     print(f"  {len(samples)} detections.  Match threshold is {COSINE_MATCH_THRESHOLD}.\n")
@@ -360,8 +407,10 @@ def calibrate(db, people: list[dict], seconds: float, size: tuple[int, int] | No
         sims = np.array([sim for _, sim in in_band])
         hit_rate = float((sims >= COSINE_MATCH_THRESHOLD).mean())
         label = f"{lo:.0f}-{hi:.0f}" if hi < 1e9 else f"{lo:.0f}+"
-        print(f"  {label:>18} | {len(in_band):>4} | {np.median(sims):>10.3f} | "
-              f"{hit_rate * 100:>17.0f}%")
+        print(
+            f"  {label:>18} | {len(in_band):>4} | {np.median(sims):>10.3f} | "
+            f"{hit_rate * 100:>17.0f}%"
+        )
         # The lowest band where the great majority of frames still match is where the real
         # floor is: below it the embedding has stopped carrying the face.
         if hit_rate >= 0.8 and recommended is None:
@@ -369,35 +418,47 @@ def calibrate(db, people: list[dict], seconds: float, size: tuple[int, int] | No
 
     print()
     if recommended is None:
-        print("  NO sharpness band matched reliably. That is a genuine image-quality problem,\n"
-              "  not a threshold that is set too high - more light is the fix, and lowering\n"
-              "  MIN_BLUR_VARIANCE would only let bad embeddings through.")
+        print(
+            "  NO sharpness band matched reliably. That is a genuine image-quality problem,\n"
+            "  not a threshold that is set too high - more light is the fix, and lowering\n"
+            "  MIN_BLUR_VARIANCE would only let bad embeddings through."
+        )
     elif recommended >= MIN_BLUR_VARIANCE:
-        print(f"  Matching only becomes reliable at sharpness {recommended:.0f}+, which is at or\n"
-              f"  above the current MIN_BLUR_VARIANCE of {MIN_BLUR_VARIANCE:.0f}. The gate is set\n"
-              f"  correctly - the room needs more light.")
+        print(
+            f"  Matching only becomes reliable at sharpness {recommended:.0f}+, which is at or\n"
+            f"  above the current MIN_BLUR_VARIANCE of {MIN_BLUR_VARIANCE:.0f}. The gate is set\n"
+            f"  correctly - the room needs more light."
+        )
     else:
-        print(f"  Frames from sharpness {recommended:.0f} upward already match reliably, while\n"
-              f"  MIN_BLUR_VARIANCE is {MIN_BLUR_VARIANCE:.0f} - so usable frames are being thrown away.\n"
-              f"  Lowering MIN_BLUR_VARIANCE in sface_embedder.py to about {recommended:.0f} would let\n"
-              f"  this camera recognize you, on this evidence.\n\n"
-              f"  Leave MIN_ENROLL_BLUR_VARIANCE ({MIN_ENROLL_BLUR_VARIANCE:.0f}) alone unless it also\n"
-              f"  blocks everything: a bad frame used for MATCHING costs one bad moment, while a bad\n"
-              f"  frame STORED as a reference sample degrades every future comparison permanently.")
+        print(
+            f"  Frames from sharpness {recommended:.0f} upward already match reliably, while\n"
+            f"  MIN_BLUR_VARIANCE is {MIN_BLUR_VARIANCE:.0f} - so usable frames are being thrown away.\n"
+            f"  Lowering MIN_BLUR_VARIANCE in sface_embedder.py to about {recommended:.0f} would let\n"
+            f"  this camera recognize you, on this evidence.\n\n"
+            f"  Leave MIN_ENROLL_BLUR_VARIANCE ({MIN_ENROLL_BLUR_VARIANCE:.0f}) alone unless it also\n"
+            f"  blocks everything: a bad frame used for MATCHING costs one bad moment, while a bad\n"
+            f"  frame STORED as a reference sample degrades every future comparison permanently."
+        )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--seconds", type=float, default=10.0,
-                        help="how long to watch the camera (default 10)")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--seconds", type=float, default=10.0, help="how long to watch the camera (default 10)"
+    )
     parser.add_argument("--width", type=int, help="capture width to request")
     parser.add_argument("--height", type=int, help="capture height to request")
-    parser.add_argument("--no-camera", action="store_true",
-                        help="only run the database checks (steps 1-3)")
-    parser.add_argument("--calibrate", action="store_true",
-                        help="measure what sharpness is actually good enough on this camera, "
-                             "instead of trusting MIN_BLUR_VARIANCE")
+    parser.add_argument(
+        "--no-camera", action="store_true", help="only run the database checks (steps 1-3)"
+    )
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="measure what sharpness is actually good enough on this camera, "
+        "instead of trusting MIN_BLUR_VARIANCE",
+    )
     args = parser.parse_args()
 
     # Default to the SAME capture size the orchestrator asks for (main_live.py's
@@ -423,4 +484,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     sys.exit(main())

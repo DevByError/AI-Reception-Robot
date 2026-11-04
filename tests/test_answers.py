@@ -1,7 +1,5 @@
 """Stage 05: answer chain order, streamed general answers, prefetch."""
 
-import pytest
-
 import dialogue_manager as dm
 import dialogue_manager_live as dml
 from knowledge_base import KnowledgeBase, KnowledgeChunk
@@ -40,8 +38,11 @@ class _Fake:
 
 def test_header_is_stripped_and_label_parsed():
     info = {}
-    out = "".join(dm.strip_general_header(
-        iter(["UNIVERSITY_", "RELATED: no\nANS", "WER: Sure, ", "it's sunny."]), info))
+    out = "".join(
+        dm.strip_general_header(
+            iter(["UNIVERSITY_", "RELATED: no\nANS", "WER: Sure, ", "it's sunny."]), info
+        )
+    )
     assert out == "Sure, it's sunny."
     assert info["university_related"] is False and info["answered"] is True
 
@@ -61,8 +62,11 @@ def test_blank_answer_marks_unanswered():
 
 def _kb():
     kb = KnowledgeBase()
-    kb.upsert(KnowledgeChunk("lib", "The library is on the second floor.", "x", 0.0,
-                             is_direct_answer=True))
+    kb.upsert(
+        KnowledgeChunk(
+            "lib", "The library is on the second floor.", "x", 0.0, is_direct_answer=True
+        )
+    )
     return kb
 
 
@@ -97,11 +101,19 @@ def test_chain_fails_over_before_first_word_for_general_answers():
 
 def test_backend_order_follows_config(monkeypatch):
     made = []
-    monkeypatch.setattr(dml, "_CLOUD_BACKENDS", {
-        "groq": ("Groq", "GROQ_API_KEY", lambda: made.append("groq") or _Fake("groq")),
-        "gemini": ("Gemini", "GEMINI_API_KEY", lambda: made.append("gemini") or _Fake("gemini")),
-        "claude": ("Claude", "ANTHROPIC_API_KEY", lambda: _Fake("claude")),
-    })
+    monkeypatch.setattr(
+        dml,
+        "_CLOUD_BACKENDS",
+        {
+            "groq": ("Groq", "GROQ_API_KEY", lambda: made.append("groq") or _Fake("groq")),
+            "gemini": (
+                "Gemini",
+                "GEMINI_API_KEY",
+                lambda: made.append("gemini") or _Fake("gemini"),
+            ),
+            "claude": ("Claude", "ANTHROPIC_API_KEY", lambda: _Fake("claude")),
+        },
+    )
     monkeypatch.setenv("GROQ_API_KEY", "x")
     monkeypatch.setenv("GEMINI_API_KEY", "y")
     monkeypatch.setattr(dml, "_build_local_generator", lambda warm=True: ("Ollama", _Fake("o")))

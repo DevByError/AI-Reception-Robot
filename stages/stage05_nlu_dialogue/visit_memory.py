@@ -39,10 +39,13 @@ Run: python visit_memory.py     (offline self-test - no model, no database neede
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 import time
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
 from project_env import load_env_file  # noqa: E402
@@ -63,7 +66,7 @@ INTEREST_PREFIX = "INTEREST: "
 DETAIL_PREFIX = "DETAIL: "
 
 MAX_FACTS_PER_VISIT = 3  # a visit that produces more than this is almost always the model
-                          # padding rather than the visitor actually saying that much
+# padding rather than the visitor actually saying that much
 
 EXTRACTION_SYSTEM_PROMPT = (
     "You read one short conversation between a university front-desk robot and a student, and "
@@ -166,15 +169,17 @@ def _default_completer():
         import ollama_client
 
         if ollama_client.is_available() and ollama_client.has_model(ollama_client.CHAT_MODEL):
+
             def _complete(prompt: str) -> str:
                 return ollama_client.chat(
                     prompt,
                     system=EXTRACTION_SYSTEM_PROMPT,
                     temperature=0.1,  # this is extraction, not writing - near-deterministic
                 )
+
             return _complete
     except Exception as exc:  # noqa: BLE001 - a broken local backend must not break the visit
-        print(f"[memory] local model unavailable for fact extraction ({exc!r}).")
+        log.warning(f"[memory] local model unavailable for fact extraction ({exc!r}).")
 
     try:
         import os
@@ -198,9 +203,10 @@ def _default_completer():
                     ),
                 )
                 return response.text or ""
+
             return _complete
     except Exception as exc:  # noqa: BLE001
-        print(f"[memory] cloud model unavailable for fact extraction ({exc!r}).")
+        log.warning(f"[memory] cloud model unavailable for fact extraction ({exc!r}).")
 
     return None
 
@@ -223,23 +229,25 @@ def extract_facts(turns: list[dict], complete=None) -> list[str]:
     try:
         raw = complete(f"Conversation:\n{transcript}")
     except Exception as exc:  # noqa: BLE001 - see docstring
-        print(f"[memory] fact extraction failed ({exc!r}) - remembering nothing from this visit.")
+        log.warning(
+            f"[memory] fact extraction failed ({exc!r}) - remembering nothing from this visit."
+        )
         return []
 
     facts = parse_facts(raw)
     if facts:
-        print(f"[memory] remembered {len(facts)} thing(s) from this visit.")
+        log.info(f"[memory] remembered {len(facts)} thing(s) from this visit.")
     return facts
 
 
 def interests(facts: list[str]) -> list[str]:
     """The speakable half of what is stored - see INTEREST_PREFIX."""
-    return [f[len(INTEREST_PREFIX):] for f in facts if f.startswith(INTEREST_PREFIX)]
+    return [f[len(INTEREST_PREFIX) :] for f in facts if f.startswith(INTEREST_PREFIX)]
 
 
 def details(facts: list[str]) -> list[str]:
     """The half that is context for an answer, never spoken as-is - see DETAIL_PREFIX."""
-    return [f[len(DETAIL_PREFIX):] for f in facts if f.startswith(DETAIL_PREFIX)]
+    return [f[len(DETAIL_PREFIX) :] for f in facts if f.startswith(DETAIL_PREFIX)]
 
 
 # Deliberately templates rather than a model call. This runs while somebody is walking up to the
@@ -265,8 +273,9 @@ _SAME_DAY_OPENERS = (
 )
 
 
-def build_recall_line(facts: list[str], last_seen: float | None = None,
-                      now: float | None = None, rng=None) -> str:
+def build_recall_line(
+    facts: list[str], last_seen: float | None = None, now: float | None = None, rng=None
+) -> str:
     """The extra sentence appended to a returning visitor's greeting. "" when there is nothing
     worth saying, which is the common case and must stay silent rather than reaching for filler.
 
@@ -294,6 +303,7 @@ def build_recall_line(facts: list[str], last_seen: float | None = None,
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     # Offline throughout - no model, no database, no network. Everything below is the parsing and
     # formatting that decides what gets stored about a real person and what gets said back to
     # them, which is exactly the part that should not need a running LLM to verify.
@@ -301,8 +311,7 @@ if __name__ == "__main__":
 
     # --- parsing a well-behaved reply --------------------------------------------------------
     parsed = parse_facts(
-        "INTEREST: the Master of Computer Science\n"
-        "DETAIL: is in their final year of a diploma\n"
+        "INTEREST: the Master of Computer Science\n" "DETAIL: is in their final year of a diploma\n"
     )
     print(f"Parsed: {parsed}")
     assert parsed == [
@@ -320,7 +329,7 @@ if __name__ == "__main__":
         "- INTEREST: scholarship options\n"
         "  * DETAIL: asked about the January intake\n"
         "The student seemed happy.\n"
-        "INTEREST: x\n"                       # too short to say back to anybody
+        "INTEREST: x\n"  # too short to say back to anybody
         "RANDOM: something untagged\n"
     )
     print(f"Parsed (messy): {messy}")
@@ -340,7 +349,9 @@ if __name__ == "__main__":
         {"speaker": "visitor", "text": "How long is the Master of Computer Science?"},
         {"speaker": "robot", "text": "It's a two year programme."},
     ]
-    assert extract_facts(turns, complete=lambda _: (_ for _ in ()).throw(RuntimeError("down"))) == []
+    assert (
+        extract_facts(turns, complete=lambda _: (_ for _ in ()).throw(RuntimeError("down"))) == []
+    )
     assert extract_facts([], complete=lambda _: "INTEREST: anything") == []
     print("Model failure and empty transcript both remember nothing - OK")
 
@@ -367,13 +378,22 @@ if __name__ == "__main__":
     # Nothing remembered, and nothing notable about the timing -> say nothing at all.
     assert build_recall_line([], last_seen=now - 3 * 24 * 3600, now=now, rng=rng) == ""
     # A DETAIL alone is never spoken - it is context for an answer, not a greeting.
-    assert build_recall_line([f"{DETAIL_PREFIX}is in their final year"],
-                             last_seen=now - 3 * 24 * 3600, now=now, rng=rng) == ""
+    assert (
+        build_recall_line(
+            [f"{DETAIL_PREFIX}is in their final year"],
+            last_seen=now - 3 * 24 * 3600,
+            now=now,
+            rng=rng,
+        )
+        == ""
+    )
     # Only ever one thing recalled, however much is stored.
     many = [f"{INTEREST_PREFIX}topic {i}" for i in range(5)]
     line = build_recall_line(many, last_seen=None, now=now, rng=rng)
     assert sum(1 for i in range(5) if f"topic {i}" in line) == 1, line
 
-    print("\nOK: only well-formed, tagged facts are ever stored, a failing or missing model "
-          "remembers nothing rather than breaking the visit, and the greeting recalls exactly "
-          "one thing - or stays quiet.")
+    print(
+        "\nOK: only well-formed, tagged facts are ever stored, a failing or missing model "
+        "remembers nothing rather than breaking the visit, and the greeting recalls exactly "
+        "one thing - or stays quiet."
+    )

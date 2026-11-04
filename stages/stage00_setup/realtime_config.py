@@ -44,8 +44,12 @@ from - which is the fastest way to confirm a .env edit actually took effect.
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # project_env lives in this same folder, so no sys.path juggling is needed when this module is
 # imported by a stage that already added stage00_setup to the path.
@@ -98,13 +102,14 @@ def get_bool(name: str, default: bool) -> bool:
         return True
     if lowered in ("0", "false", "no", "off", "n"):
         return False
-    print(f"[config] {name}={value!r} is not a yes/no value - using {default}.")
+    log.info(f"[config] {name}={value!r} is not a yes/no value - using {default}.")
     _SOURCES[name] = "default (unparseable)"
     return default
 
 
-def get_int(name: str, default: int, *, minimum: int | None = None,
-            maximum: int | None = None) -> int:
+def get_int(
+    name: str, default: int, *, minimum: int | None = None, maximum: int | None = None
+) -> int:
     value, source = _raw(name)
     _SOURCES[name] = source
     if value is None:
@@ -112,14 +117,15 @@ def get_int(name: str, default: int, *, minimum: int | None = None,
     try:
         parsed = int(float(value.strip()))  # float() first so "550.0" is accepted too
     except ValueError:
-        print(f"[config] {name}={value!r} is not a number - using {default}.")
+        log.info(f"[config] {name}={value!r} is not a number - using {default}.")
         _SOURCES[name] = "default (unparseable)"
         return default
     return _clamp(name, parsed, default, minimum, maximum)
 
 
-def get_float(name: str, default: float, *, minimum: float | None = None,
-              maximum: float | None = None) -> float:
+def get_float(
+    name: str, default: float, *, minimum: float | None = None, maximum: float | None = None
+) -> float:
     value, source = _raw(name)
     _SOURCES[name] = source
     if value is None:
@@ -127,7 +133,7 @@ def get_float(name: str, default: float, *, minimum: float | None = None,
     try:
         parsed = float(value.strip())
     except ValueError:
-        print(f"[config] {name}={value!r} is not a number - using {default}.")
+        log.info(f"[config] {name}={value!r} is not a number - using {default}.")
         _SOURCES[name] = "default (unparseable)"
         return default
     return _clamp(name, parsed, default, minimum, maximum)
@@ -142,11 +148,11 @@ def _clamp(name, parsed, default, minimum, maximum):
     instantly. Refusing the value and saying so beats either.
     """
     if minimum is not None and parsed < minimum:
-        print(f"[config] {name}={parsed} is below the minimum {minimum} - using {default}.")
+        log.info(f"[config] {name}={parsed} is below the minimum {minimum} - using {default}.")
         _SOURCES[name] = "default (out of range)"
         return default
     if maximum is not None and parsed > maximum:
-        print(f"[config] {name}={parsed} is above the maximum {maximum} - using {default}.")
+        log.info(f"[config] {name}={parsed} is above the maximum {maximum} - using {default}.")
         _SOURCES[name] = "default (out of range)"
         return default
     return parsed
@@ -155,7 +161,7 @@ def _clamp(name, parsed, default, minimum, maximum):
 def get_choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     value = get_str(name, default).lower()
     if value not in allowed:
-        print(f"[config] {name}={value!r} is not one of {allowed} - using {default!r}.")
+        log.info(f"[config] {name}={value!r} is not one of {allowed} - using {default!r}.")
         _SOURCES[name] = "default (not a valid choice)"
         return default
     return value
@@ -226,20 +232,12 @@ class _RealtimeConfig:
         self.END_OF_TURN_TIMEOUT: int = get_int(
             "END_OF_TURN_TIMEOUT", 900, minimum=150, maximum=10000
         )
-        self.MIN_SPEECH_DURATION: int = get_int(
-            "MIN_SPEECH_DURATION", 400, minimum=0, maximum=5000
-        )
-        self.MAX_UTTERANCE_S: float = get_float(
-            "MAX_UTTERANCE_S", 15.0, minimum=1.0, maximum=120.0
-        )
+        self.MIN_SPEECH_DURATION: int = get_int("MIN_SPEECH_DURATION", 400, minimum=0, maximum=5000)
+        self.MAX_UTTERANCE_S: float = get_float("MAX_UTTERANCE_S", 15.0, minimum=1.0, maximum=120.0)
 
         # --- how sensitive the microphone side is ---------------------------------------------
-        self.VAD_AGGRESSIVENESS: int = get_int(
-            "VAD_AGGRESSIVENESS", 1, minimum=0, maximum=3
-        )
-        self.SPEECH_START_FRAMES: int = get_int(
-            "SPEECH_START_FRAMES", 4, minimum=1, maximum=50
-        )
+        self.VAD_AGGRESSIVENESS: int = get_int("VAD_AGGRESSIVENESS", 1, minimum=0, maximum=3)
+        self.SPEECH_START_FRAMES: int = get_int("SPEECH_START_FRAMES", 4, minimum=1, maximum=50)
         self.PREROLL_FRAMES: int = get_int("PREROLL_FRAMES", 20, minimum=0, maximum=100)
         # While somebody is talking to the robot, sound this many dB quieter than their own
         # voice is not them - another conversation across the room, a corridor. It no longer
@@ -249,15 +247,11 @@ class _RealtimeConfig:
         self.VOICE_GATE_DB: float = get_float("VOICE_GATE_DB", 25.0, minimum=0.0, maximum=60.0)
 
         # --- barge-in -------------------------------------------------------------------------
-        self.BARGE_IN_MARGIN: float = get_float(
-            "BARGE_IN_MARGIN", 2.5, minimum=1.05, maximum=50.0
-        )
+        self.BARGE_IN_MARGIN: float = get_float("BARGE_IN_MARGIN", 2.5, minimum=1.05, maximum=50.0)
         self.BARGE_IN_MIN_SPEECH_MS: int = get_int(
             "BARGE_IN_MIN_SPEECH_MS", 330, minimum=60, maximum=5000
         )
-        self.BARGE_IN_WARMUP_MS: int = get_int(
-            "BARGE_IN_WARMUP_MS", 700, minimum=0, maximum=5000
-        )
+        self.BARGE_IN_WARMUP_MS: int = get_int("BARGE_IN_WARMUP_MS", 700, minimum=0, maximum=5000)
         # Above this measured echo level, calibration refuses to enable barge-in: the speaker is
         # simply too loud into this microphone for any threshold to separate the robot's own
         # voice from a person's, and shipping a barge-in that fires on the robot itself is worse
@@ -300,9 +294,7 @@ class _RealtimeConfig:
         # the cap.
         #
         # Requires STREAMING_STT (there are no partials otherwise). Set to 0 to switch off.
-        self.TURN_STABLE_PARTIALS: int = get_int(
-            "TURN_STABLE_PARTIALS", 2, minimum=0, maximum=20
-        )
+        self.TURN_STABLE_PARTIALS: int = get_int("TURN_STABLE_PARTIALS", 2, minimum=0, maximum=20)
         self.PARTIAL_INTERVAL_S: float = get_float(
             "PARTIAL_INTERVAL_S", 1.5, minimum=0.2, maximum=30.0
         )
@@ -385,9 +377,7 @@ class _RealtimeConfig:
         #          answer (better than going deaf when the camera misses a frame).
         # strict = like auto, but with no face data only the wake word counts.
         # off    = the old behaviour: everything heard during a visit is a question.
-        self.ADDRESSEE_CHECK: str = get_choice(
-            "ADDRESSEE_CHECK", "auto", ("auto", "strict", "off")
-        )
+        self.ADDRESSEE_CHECK: str = get_choice("ADDRESSEE_CHECK", "auto", ("auto", "strict", "off"))
         # Share of the speech window in which the speaker's lips must have been moving.
         self.ADDRESSEE_MIN_LIP_FRACTION: float = get_float(
             "ADDRESSEE_MIN_LIP_FRACTION", 0.25, minimum=0.0, maximum=1.0
@@ -437,9 +427,7 @@ class _RealtimeConfig:
         # smart_turn = a small model that listens to HOW you finished (Pipecat smart-turn v3,
         # 8MB) and lets the robot answer ~250ms after a clearly finished question.
         # pitch = the older pitch-contour + transcript heuristics only.
-        self.TURN_DETECTOR: str = get_choice(
-            "TURN_DETECTOR", "smart_turn", ("smart_turn", "pitch")
-        )
+        self.TURN_DETECTOR: str = get_choice("TURN_DETECTOR", "smart_turn", ("smart_turn", "pitch"))
         self.SMART_TURN_THRESHOLD: float = get_float(
             "SMART_TURN_THRESHOLD", 0.5, minimum=0.05, maximum=0.99
         )
@@ -503,8 +491,10 @@ class _RealtimeConfig:
         order = [b.strip().lower() for b in self.ANSWER_BACKENDS.split(",") if b.strip()]
         unknown = [b for b in order if b not in known]
         if unknown:
-            print(f"[config] ANSWER_BACKENDS has unknown name(s) {unknown} - ignoring them. "
-                  f"Known: {', '.join(known)}.")
+            log.info(
+                f"[config] ANSWER_BACKENDS has unknown name(s) {unknown} - ignoring them. "
+                f"Known: {', '.join(known)}."
+            )
         return [b for b in order if b in known] or ["groq", "gemini", "ollama"]
 
     def push_to_talk(self) -> bool:
@@ -529,10 +519,10 @@ class _RealtimeConfig:
                 f"Raising MAX to {self.MIN_SILENCE_DURATION * 2}ms."
             )
             self.MAX_SILENCE_DURATION = self.MIN_SILENCE_DURATION * 2
-        if not (self.MIN_SILENCE_DURATION <= self.END_OF_TURN_TIMEOUT
-                <= self.MAX_SILENCE_DURATION):
-            clamped = max(self.MIN_SILENCE_DURATION,
-                          min(self.END_OF_TURN_TIMEOUT, self.MAX_SILENCE_DURATION))
+        if not (self.MIN_SILENCE_DURATION <= self.END_OF_TURN_TIMEOUT <= self.MAX_SILENCE_DURATION):
+            clamped = max(
+                self.MIN_SILENCE_DURATION, min(self.END_OF_TURN_TIMEOUT, self.MAX_SILENCE_DURATION)
+            )
             problems.append(
                 f"END_OF_TURN_TIMEOUT ({self.END_OF_TURN_TIMEOUT}ms) must sit between "
                 f"MIN_SILENCE_DURATION ({self.MIN_SILENCE_DURATION}ms) and "
@@ -555,10 +545,11 @@ class _RealtimeConfig:
 RT = _RealtimeConfig()
 
 for _problem in RT.validate():
-    print(f"[config] {_problem}")
+    log.info(f"[config] {_problem}")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     print("Real-time conversation settings\n")
     print(f"  (.env file: {Path(__file__).resolve().parents[2] / '.env'})\n")
     width = max(len(k) for k in vars(RT))
@@ -566,8 +557,11 @@ if __name__ == "__main__":
         origin = _SOURCES.get(key, "default")
         marker = "  " if origin == "default" else "* "
         print(f"{marker}{key:<{width}}  {str(value):<12}  [{origin}]")
-    print("\n* = overridden from the environment or .env; everything else is the shipped "
-          "default.")
-    print(f"\nbarge-in: calibrate at startup={RT.barge_in_wanted()}, "
-          f"force on regardless of the measurement={RT.barge_in_forced()}")
+    print(
+        "\n* = overridden from the environment or .env; everything else is the shipped " "default."
+    )
+    print(
+        f"\nbarge-in: calibrate at startup={RT.barge_in_wanted()}, "
+        f"force on regardless of the measurement={RT.barge_in_forced()}"
+    )
     print(f"conversation: {'push-to-talk' if RT.push_to_talk() else 'continuous (hands-free)'}")

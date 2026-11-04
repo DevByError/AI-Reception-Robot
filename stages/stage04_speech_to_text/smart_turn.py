@@ -21,6 +21,7 @@ Run:    python smart_turn.py file.wav                     (prints the probabilit
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
@@ -28,10 +29,11 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
-from model_paths import SMART_TURN_MODEL  # noqa: E402
+log = logging.getLogger(__name__)
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
 from _whisper_features import compute_whisper_log_mel_features  # noqa: E402
+from model_paths import SMART_TURN_MODEL  # noqa: E402
 
 SAMPLE_RATE = 16000
 WINDOW_S = 8
@@ -42,14 +44,16 @@ class SmartTurn:
         import onnxruntime as ort
 
         if not Path(model_path).exists():
-            raise FileNotFoundError(f"{model_path} is missing - run "
-                                    f"python stages/stage00_setup/download_models.py")
+            raise FileNotFoundError(
+                f"{model_path} is missing - run " f"python stages/stage00_setup/download_models.py"
+            )
         options = ort.SessionOptions()
         options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         options.inter_op_num_threads = 1
         options.intra_op_num_threads = threads
-        self._session = ort.InferenceSession(str(model_path), sess_options=options,
-                                             providers=["CPUExecutionProvider"])
+        self._session = ort.InferenceSession(
+            str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
+        )
         self._lock = threading.Lock()
         self.last_ms = 0.0
 
@@ -83,12 +87,15 @@ def shared_model() -> SmartTurn | None:
             _shared = SmartTurn()
         except Exception as exc:  # noqa: BLE001
             _shared_failed = True
-            print(f"[turn] smart-turn model unavailable ({exc}) - using the pitch/silence "
-                  f"endpointing instead.")
+            log.warning(
+                f"[turn] smart-turn model unavailable ({exc}) - using the pitch/silence "
+                f"endpointing instead."
+            )
     return _shared
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     import soundfile as sf
 
     model = SmartTurn()
@@ -99,4 +106,6 @@ if __name__ == "__main__":
         if rate != SAMPLE_RATE:
             raise SystemExit(f"{path}: needs 16kHz audio, got {rate}")
         p = model.probability(data)
-        print(f"{p:.3f}  {'complete' if p >= 0.5 else 'incomplete'}  ({model.last_ms:.0f}ms)  {path}")
+        print(
+            f"{p:.3f}  {'complete' if p >= 0.5 else 'incomplete'}  ({model.last_ms:.0f}ms)  {path}"
+        )

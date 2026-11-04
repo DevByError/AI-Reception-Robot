@@ -42,16 +42,20 @@ and to see what it currently believes, and which of the three sources that came 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+log = logging.getLogger(__name__)
+
 # LUC_IDENTITY_CACHE moves it - the test suite points it at a scratch folder, so running the
 # tests can never rewrite the real robot's offline copy of its name.
-CACHE_FILE = Path(os.environ.get("LUC_IDENTITY_CACHE")
-                  or Path(__file__).resolve().parent / "identity_cache.json")
+CACHE_FILE = Path(
+    os.environ.get("LUC_IDENTITY_CACHE") or Path(__file__).resolve().parent / "identity_cache.json"
+)
 _STAGE02_DIR = Path(__file__).resolve().parents[1] / "stage02_face_recognition"
 
 
@@ -75,7 +79,7 @@ class Identity:
         return asdict(self)
 
     @classmethod
-    def from_rows(cls, rows: dict[str, str]) -> "Identity":
+    def from_rows(cls, rows: dict[str, str]) -> Identity:
         """Builds a profile from whatever the table actually held, falling back per FIELD rather
         than per profile: a half-populated table (someone inserted `robot_name` by hand and
         nothing else) yields a working robot, not a KeyError. Unknown extra fields are ignored
@@ -136,15 +140,19 @@ def _rows_from_db(db) -> dict[str, str] | None:
         # before the built-in defaults. Added 2026-10-27 with the SQLite fallback: a brand-new
         # local database would otherwise rename a robot that has been "Nova" for months back to
         # the seed name the moment MySQL was unavailable.
-        known = {**SEED_IDENTITY.as_rows(), **{k: v for k, v in (_read_cache() or {}).items()
-                                               if k in SEED_IDENTITY.as_rows() and v}}
+        known = {
+            **SEED_IDENTITY.as_rows(),
+            **{
+                k: v for k, v in (_read_cache() or {}).items() if k in SEED_IDENTITY.as_rows() and v
+            },
+        }
         missing = {f: v for f, v in known.items() if f not in rows}
         if missing:
             db.seed_identity_fields(missing)
             rows.update(missing)
         return rows
     except Exception as exc:  # a live query fails in ways a successful connect can't predict
-        print(f"[identity] could not read robot_identity ({exc}) - falling back")
+        log.warning(f"[identity] could not read robot_identity ({exc}) - falling back")
         return None
 
 
@@ -185,8 +193,10 @@ def use_database(db, *, verbose: bool = True) -> Identity:
 
     _identity = Identity.from_rows(rows or {})
     if verbose:
-        print(f"[identity] {_identity.robot_name}, created by {_identity.creator_name} "
-              f"- from {_source}")
+        log.info(
+            f"[identity] {_identity.robot_name}, created by {_identity.creator_name} "
+            f"- from {_source}"
+        )
     return _identity
 
 
@@ -425,10 +435,7 @@ def detect_identity_answer(question: str) -> str | None:
     nationality_intent = (
         any(p in cleaned for p in NATIONALITY_PHRASES)
         or any(p in cleaned for p in creator_from_phrases)
-        or (
-            NATIONALITY_TOKEN in words
-            and (creator_intent or bool(words & CREATOR_PRONOUN_TOKENS))
-        )
+        or (NATIONALITY_TOKEN in words and (creator_intent or bool(words & CREATOR_PRONOUN_TOKENS)))
     )
 
     if not (name_intent or creator_intent or nationality_intent or email_intent):
@@ -453,6 +460,7 @@ def detect_identity_answer(question: str) -> str | None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 
     def _print_current() -> None:
         current = get_identity()
@@ -462,20 +470,24 @@ if __name__ == "__main__":
 
     if "--show" in sys.argv:
         _print_current()
-        print(f"\nOffline cache: {CACHE_FILE} "
-              f"({'present' if CACHE_FILE.exists() else 'not written yet'})")
+        print(
+            f"\nOffline cache: {CACHE_FILE} "
+            f"({'present' if CACHE_FILE.exists() else 'not written yet'})"
+        )
         sys.exit(0)
 
     if "--set" in sys.argv:
         assignments: dict[str, str] = {}
-        for argument in sys.argv[sys.argv.index("--set") + 1:]:
+        for argument in sys.argv[sys.argv.index("--set") + 1 :]:
             field, sep, value = argument.partition("=")
             if not sep:
                 print(f"Expected field=value, got {argument!r}")
                 sys.exit(2)
             if field not in Identity.__dataclass_fields__:
-                print(f"Unknown field {field!r}. Known fields: "
-                      f"{', '.join(Identity.__dataclass_fields__)}")
+                print(
+                    f"Unknown field {field!r}. Known fields: "
+                    f"{', '.join(Identity.__dataclass_fields__)}"
+                )
                 sys.exit(2)
             assignments[field] = value
         try:
@@ -525,8 +537,7 @@ if __name__ == "__main__":
 
     # --- compound question, all four sub-intents in one utterance ---------------------------
     compound = (
-        "who created you and where he is from and what is his email and what is his "
-        "nationality"
+        "who created you and where he is from and what is his email and what is his " "nationality"
     )
     answer = detect_identity_answer(compound)
     print(f"\nCompound: {compound!r}\n  -> {answer!r}")
@@ -568,14 +579,16 @@ if __name__ == "__main__":
     # machine with no database, and a self-test that renamed the real robot in a shared database
     # as a side effect of being run would be a genuinely bad way to find that out.
     print("\nSubstituting a different identity (what an UPDATE in robot_identity does):")
-    set_identity(Identity(
-        robot_name="Nova",
-        creator_name="Mariam Haddad",
-        creator_email="m.haddad@example.org",
-        creator_nationality="Jordanian",
-        creator_country="Jordan",
-        creator_pronoun="she",
-    ))
+    set_identity(
+        Identity(
+            robot_name="Nova",
+            creator_name="Mariam Haddad",
+            creator_email="m.haddad@example.org",
+            creator_nationality="Jordanian",
+            creator_country="Jordan",
+            creator_pronoun="she",
+        )
+    )
     substituted = detect_identity_answer("who are you and where is your creator from")
     print(f"  'who are you and where is your creator from' -> {substituted!r}")
     all_ok &= _check(
@@ -585,9 +598,7 @@ if __name__ == "__main__":
     )
     all_ok &= _check(
         "the substituted creator's own name is matchable ('where is Haddad from')",
-        (lambda a: a is not None and "Jordan" in a)(
-            detect_identity_answer("where is Haddad from")
-        ),
+        (lambda a: a is not None and "Jordan" in a)(detect_identity_answer("where is Haddad from")),
     )
     all_ok &= _check(
         "the previous creator's name no longer matches anything",

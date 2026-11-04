@@ -56,12 +56,15 @@ Run: python dialogue_manager_live.py
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
 import threading  # ChainAnswerGenerator's background backend re-check
 import time
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # Loaded before GEMINI_API_KEY/GROQ_API_KEY are read in _build_answer_generator(), so an API key
 # can live in the project-root .env alongside every other setting instead of having to be a real
@@ -76,9 +79,7 @@ from dialogue_manager import DialogueManager  # noqa: E402
 from identity import get_identity, identity_source  # noqa: E402
 from knowledge_base import KnowledgeBase, KnowledgeChunk  # noqa: E402
 
-CLAUDE_MODEL = (
-    "claude-haiku-4-5-20251001"  # fast/cheap tier - matches this stage's low-latency
-)
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # fast/cheap tier - matches this stage's low-latency
 # voice-interaction goal; swap to "claude-sonnet-5"
 # if answer quality needs to be better and the extra
 # latency/cost is acceptable
@@ -252,9 +253,7 @@ class ClaudeAnswerGenerator:
         self.client = Anthropic(api_key=key)
         self.model = model
 
-    def generate_grounded_answer(
-        self, question: str, chunks: list[KnowledgeChunk]
-    ) -> str:
+    def generate_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]) -> str:
         context = "\n\n".join(f"- {c.text} (source: {c.source_url})" for c in chunks)
         message = self.client.messages.create(
             model=self.model,
@@ -280,8 +279,7 @@ class ClaudeAnswerGenerator:
             messages=[{"role": "user", "content": _grounded_prompt(question, chunks)}],
             temperature=0.2,
         ) as stream:
-            for piece in stream.text_stream:
-                yield piece
+            yield from stream.text_stream
 
     def stream_general_answer(self, question: str):
         with self.client.messages.stream(
@@ -291,8 +289,7 @@ class ClaudeAnswerGenerator:
             messages=[{"role": "user", "content": question}],
             temperature=0.7,
         ) as stream:
-            for piece in stream.text_stream:
-                yield piece
+            yield from stream.text_stream
 
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
         message = self.client.messages.create(
@@ -315,9 +312,13 @@ def _brief(exc: Exception) -> str:
     "that backend is down, moving on" lines.
     """
     text = str(exc)
-    for code, label in (("429", "quota exhausted"), ("503", "model overloaded"),
-                        ("500", "server error"), ("401", "bad API key"),
-                        ("403", "access denied")):
+    for code, label in (
+        ("429", "quota exhausted"),
+        ("503", "model overloaded"),
+        ("500", "server error"),
+        ("401", "bad API key"),
+        ("403", "access denied"),
+    ):
         if code in text[:200]:
             return f"{code} {label}"
     return type(exc).__name__
@@ -332,8 +333,7 @@ def _is_backend_unavailable(exc: Exception) -> bool:
     live code paths in this file. A status code in the message is the one thing they all share.
     """
     text = str(exc)[:200]
-    return any(code in text for code in ("429", "503", "500", "RESOURCE_EXHAUSTED",
-                                         "UNAVAILABLE"))
+    return any(code in text for code in ("429", "503", "500", "RESOURCE_EXHAUSTED", "UNAVAILABLE"))
 
 
 class GeminiAnswerGenerator:
@@ -386,13 +386,18 @@ class GeminiAnswerGenerator:
         # Tune with GEMINI_TIMEOUT_S (seconds). Raise it if you are on a slow link and see
         # healthy calls being cut off; the [gemini] log line names the timeout when that happens.
         GEMINI_MIN_TIMEOUT_S = 10.0
-        requested = float(os.environ.get("GEMINI_TIMEOUT_S")
-                          or os.environ.get("LUC_GEMINI_TIMEOUT_S") or GEMINI_MIN_TIMEOUT_S)
+        requested = float(
+            os.environ.get("GEMINI_TIMEOUT_S")
+            or os.environ.get("LUC_GEMINI_TIMEOUT_S")
+            or GEMINI_MIN_TIMEOUT_S
+        )
         timeout_s = max(requested, GEMINI_MIN_TIMEOUT_S)
         if requested < GEMINI_MIN_TIMEOUT_S:
-            print(f"[gemini] GEMINI_TIMEOUT_S={requested:g}s is below the API's own "
-                  f"{GEMINI_MIN_TIMEOUT_S:g}s minimum, which it rejects with a 400 on every "
-                  f"call - using {timeout_s:g}s instead.")
+            log.warning(
+                f"[gemini] GEMINI_TIMEOUT_S={requested:g}s is below the API's own "
+                f"{GEMINI_MIN_TIMEOUT_S:g}s minimum, which it rejects with a 400 on every "
+                f"call - using {timeout_s:g}s instead."
+            )
         self.timeout_s = timeout_s
         try:
             from google.genai import types as _types
@@ -403,9 +408,11 @@ class GeminiAnswerGenerator:
                 http_options=_types.HttpOptions(timeout=int(timeout_s * 1000)),
             )
         except Exception as exc:  # noqa: BLE001 - an SDK too old to accept http_options
-            print(f"[gemini] could not set a {timeout_s:.0f}s call timeout ({exc!r}) - falling "
-                  f"back to the SDK default, which can hang for over a minute on a 429/503. "
-                  f"Upgrade with: pip install -U google-genai")
+            log.warning(
+                f"[gemini] could not set a {timeout_s:.0f}s call timeout ({exc!r}) - falling "
+                f"back to the SDK default, which can hang for over a minute on a 429/503. "
+                f"Upgrade with: pip install -U google-genai"
+            )
             self.client = genai.Client(api_key=key)
         self.model = model
 
@@ -431,9 +438,7 @@ class GeminiAnswerGenerator:
             config=types.GenerateContentConfig(max_output_tokens=16, temperature=0.0),
         )
 
-    def generate_grounded_answer(
-        self, question: str, chunks: list[KnowledgeChunk]
-    ) -> str:
+    def generate_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]) -> str:
         # Deliberately NOT catching exceptions here (changed 2026-08-19 - this call used to
         # swallow a failure and quietly return chunks[0].text itself). That single-tier fallback
         # is what produced a real bad answer: a 503 on this call meant the raw chunk
@@ -536,10 +541,14 @@ class GeminiAnswerGenerator:
             # straight to the next generator in the chain (Ollama), which is the entire reason
             # the chain exists.
             if _is_backend_unavailable(exc):
-                print(f"[gemini] backend unavailable ({_brief(exc)}) - not retrying without "
-                      f"search (it would fail the same way); handing over to the next backend.")
+                log.warning(
+                    f"[gemini] backend unavailable ({_brief(exc)}) - not retrying without "
+                    f"search (it would fail the same way); handing over to the next backend."
+                )
                 return True, ""
-            print(f"[gemini] search-grounded call failed ({exc!r}) - retrying without search...")
+            log.warning(
+                f"[gemini] search-grounded call failed ({exc!r}) - retrying without search..."
+            )
             try:
                 response = self.client.models.generate_content(
                     model=self.model,
@@ -547,8 +556,10 @@ class GeminiAnswerGenerator:
                     config=types.GenerateContentConfig(**base_config),
                 )
             except Exception as exc2:
-                print(f"[gemini] retry without search also failed ({exc2!r}) - giving up on "
-                      f"this question.")
+                log.warning(
+                    f"[gemini] retry without search also failed ({exc2!r}) - giving up on "
+                    f"this question."
+                )
                 # Same fail-safe direction as _parse_university_related() below: when truly
                 # unable to tell, assume it might be university-related rather than risk an
                 # unverified answer - the caller (dialogue_manager.py) uses FALLBACK_ANSWER for
@@ -612,7 +623,9 @@ class GroqAnswerGenerator:
         """Smallest possible call - lets ChainAnswerGenerator park and re-check Groq the same
         way it does Gemini. Raises on failure, returns None when Groq is answering."""
         self.client.chat.completions.create(
-            model=self.model, messages=[{"role": "user", "content": "ping"}], max_tokens=1,
+            model=self.model,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
         )
 
     def stream_general_answer(self, question: str):
@@ -634,9 +647,7 @@ class GroqAnswerGenerator:
             if piece:
                 yield piece
 
-    def generate_grounded_answer(
-        self, question: str, chunks: list[KnowledgeChunk]
-    ) -> str:
+    def generate_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]) -> str:
         context = "\n\n".join(f"- {c.text} (source: {c.source_url})" for c in chunks)
         completion = self.client.chat.completions.create(
             model=self.model,
@@ -956,8 +967,11 @@ class ChainAnswerGenerator:
     # default: an exhausted Gemini quota resets on Google's clock (hourly or daily depending on
     # the limit hit), so probing much more often is just noise, and probing much less often
     # means running on the weaker model for longer than necessary after it recovers.
-    RECHECK_INTERVAL_S = float(os.environ.get("LLM_RECHECK_INTERVAL_S")
-                               or os.environ.get("LUC_LLM_RECHECK_INTERVAL_S") or 600.0)
+    RECHECK_INTERVAL_S = float(
+        os.environ.get("LLM_RECHECK_INTERVAL_S")
+        or os.environ.get("LUC_LLM_RECHECK_INTERVAL_S")
+        or 600.0
+    )
 
     def _recheck_every(self) -> str:
         """The re-check interval as a phrase, in whichever unit reads naturally. A short test
@@ -1005,7 +1019,8 @@ class ChainAnswerGenerator:
             if now - self._last_probe_at < self.PROBE_DEBOUNCE_S:
                 return
             candidates = [
-                (n, g) for n, g in self.generators
+                (n, g)
+                for n, g in self.generators
                 if hasattr(g, "health_check") and n not in self._probing
             ]
             if not candidates:
@@ -1015,8 +1030,10 @@ class ChainAnswerGenerator:
                 self._probing.add(name)
 
         threading.Thread(
-            target=self._probe_once, args=(candidates, reason),
-            name="llm-probe", daemon=True,
+            target=self._probe_once,
+            args=(candidates, reason),
+            name="llm-probe",
+            daemon=True,
         ).start()
 
     def _probe_once(self, candidates: list[tuple[str, object]], reason: str) -> None:
@@ -1039,10 +1056,12 @@ class ChainAnswerGenerator:
                     # never print an API key, should an error message ever echo one back
                     why = re.sub(r"(AIza|gsk_)[0-9A-Za-z_\-]{8,}", r"\1...", why)[:160]
                     why = why or type(exc).__name__
-                    print(f"[chain] {name} is not responding{where}: {why}")
-                    print(f"[chain] keeping {name} out of the chain so this visit runs on the "
-                          f"next backend with no waiting. Re-checking every "
-                          f"{self._recheck_every()}.")
+                    log.info(f"[chain] {name} is not responding{where}: {why}")
+                    log.info(
+                        f"[chain] keeping {name} out of the chain so this visit runs on the "
+                        f"next backend with no waiting. Re-checking every "
+                        f"{self._recheck_every()}."
+                    )
                 self._start_prober()
                 continue
 
@@ -1052,8 +1071,10 @@ class ChainAnswerGenerator:
                 self._parked.discard(name)
                 self._consecutive_failures.pop(name, None)
             if was_parked:
-                print(f"[chain] {name} is available again - putting it back at the front of "
-                      f"the chain.")
+                log.info(
+                    f"[chain] {name} is available again - putting it back at the front of "
+                    f"the chain."
+                )
 
     def _available(self) -> list[tuple[str, object]]:
         """The generators worth trying right now, in order.
@@ -1085,10 +1106,12 @@ class ChainAnswerGenerator:
                 return
             self._parked.add(name)
 
-        print(f"[chain] {name} has failed {count} times in a row ({_brief(exc)}) - taking it "
-              f"out of the chain so no question waits on it again. Re-checking quietly in the "
-              f"background every {self._recheck_every()}; it comes back by itself the moment "
-              f"it works.")
+        log.warning(
+            f"[chain] {name} has failed {count} times in a row ({_brief(exc)}) - taking it "
+            f"out of the chain so no question waits on it again. Re-checking quietly in the "
+            f"background every {self._recheck_every()}; it comes back by itself the moment "
+            f"it works."
+        )
         self._start_prober()
 
     def _note_success(self, name: str) -> None:
@@ -1102,7 +1125,7 @@ class ChainAnswerGenerator:
             was_parked = name in self._parked
             self._parked.discard(name)
         if had_failures or was_parked:
-            print(f"[chain] {name} is answering again.")
+            log.info(f"[chain] {name} is answering again.")
 
     def _start_prober(self) -> None:
         """Starts the background re-check thread, at most once."""
@@ -1143,14 +1166,18 @@ class ChainAnswerGenerator:
                 try:
                     check()
                 except Exception as exc:  # noqa: BLE001 - still down; try again next round
-                    print(f"[chain] {name} is still unavailable ({_brief(exc)}) - staying "
-                          f"out of the chain, next check in {self._recheck_every()}.")
+                    log.warning(
+                        f"[chain] {name} is still unavailable ({_brief(exc)}) - staying "
+                        f"out of the chain, next check in {self._recheck_every()}."
+                    )
                     continue
                 with self._lock:
                     self._parked.discard(name)
                     self._consecutive_failures.pop(name, None)
-                print(f"[chain] {name} is available again - putting it back at the front of "
-                      f"the chain. The next question will use it.")
+                log.info(
+                    f"[chain] {name} is available again - putting it back at the front of "
+                    f"the chain. The next question will use it."
+                )
 
     def close(self) -> None:
         """Stops the background re-check. Safe to call more than once, and safe to never call -
@@ -1180,17 +1207,19 @@ class ChainAnswerGenerator:
             try:
                 answer = generator.generate_grounded_answer(question, chunks)
             except Exception as exc:
-                print(f"[chain] {name} failed on the grounded answer ({exc!r}) - trying the "
-                      f"next backend.")
+                log.warning(
+                    f"[chain] {name} failed on the grounded answer ({exc!r}) - trying the "
+                    f"next backend."
+                )
                 self._note_failure(name, exc)
                 errors.append(f"{name}: {exc!r}")
                 continue
             if answer and answer.strip():
                 self._note_success(name)
                 if errors:
-                    print(f"[chain] answered by {name} after {len(errors)} failure(s).")
+                    log.warning(f"[chain] answered by {name} after {len(errors)} failure(s).")
                 return answer
-            print(f"[chain] {name} returned an empty grounded answer - trying the next backend.")
+            log.info(f"[chain] {name} returned an empty grounded answer - trying the next backend.")
             errors.append(f"{name}: empty answer")
         raise RuntimeError(f"every answer backend failed ({'; '.join(errors)})")
 
@@ -1222,28 +1251,34 @@ class ChainAnswerGenerator:
             try:
                 first = next(stream)
             except StopIteration:
-                print(f"[chain] {name} streamed an empty grounded answer - trying the next "
-                      f"backend.")
+                log.info(
+                    f"[chain] {name} streamed an empty grounded answer - trying the next "
+                    f"backend."
+                )
                 errors.append(f"{name}: empty stream")
                 continue
             except Exception as exc:
-                print(f"[chain] {name} failed to start streaming ({exc!r}) - trying the next "
-                      f"backend.")
+                log.warning(
+                    f"[chain] {name} failed to start streaming ({exc!r}) - trying the next "
+                    f"backend."
+                )
                 self._note_failure(name, exc)
                 errors.append(f"{name}: {exc!r}")
                 continue
 
             self._note_success(name)
             if errors:
-                print(f"[chain] streaming from {name} after {len(errors)} failure(s).")
+                log.warning(f"[chain] streaming from {name} after {len(errors)} failure(s).")
             yield first
             try:
                 yield from stream
             except Exception as exc:
                 # Already committed - part of this answer is out of the speaker. Stop here and
                 # let the caller speak what it has instead of contradicting itself.
-                print(f"[chain] {name} failed mid-stream ({exc!r}) - ending this answer with "
-                      f"what was already produced.")
+                log.warning(
+                    f"[chain] {name} failed mid-stream ({exc!r}) - ending this answer with "
+                    f"what was already produced."
+                )
             return
 
         detail = "; ".join(errors) if errors else "no backend supports streaming"
@@ -1268,8 +1303,10 @@ class ChainAnswerGenerator:
                 errors.append(f"{name}: empty stream")
                 continue
             except Exception as exc:
-                print(f"[chain] {name} failed to start the general answer ({_brief(exc)}) - "
-                      f"trying the next backend.")
+                log.warning(
+                    f"[chain] {name} failed to start the general answer ({_brief(exc)}) - "
+                    f"trying the next backend."
+                )
                 self._note_failure(name, exc)
                 errors.append(f"{name}: {exc!r}")
                 continue
@@ -1278,7 +1315,9 @@ class ChainAnswerGenerator:
             try:
                 yield from stream
             except Exception as exc:
-                print(f"[chain] {name} failed mid-answer ({exc!r}) - ending with what was said.")
+                log.warning(
+                    f"[chain] {name} failed mid-answer ({exc!r}) - ending with what was said."
+                )
             return
         detail = "; ".join(errors) if errors else "no backend supports streaming"
         raise RuntimeError(f"no streaming general backend succeeded ({detail})")
@@ -1288,12 +1327,14 @@ class ChainAnswerGenerator:
             try:
                 is_university_related, answer = generator.classify_and_answer_general(question)
             except Exception as exc:
-                print(f"[chain] {name} failed on the general answer ({exc!r}) - trying the "
-                      f"next backend.")
+                log.warning(
+                    f"[chain] {name} failed on the general answer ({exc!r}) - trying the "
+                    f"next backend."
+                )
                 continue
             if answer and answer.strip():
                 return is_university_related, answer
-            print(f"[chain] {name} had no general answer - trying the next backend.")
+            log.info(f"[chain] {name} had no general answer - trying the next backend.")
         # Every backend declined or failed. True (= "assume it might be university-related") is
         # the fail-safe direction the rest of this file already uses: the caller turns a blank
         # answer into the fixed apology rather than an unverified guess.
@@ -1310,9 +1351,7 @@ class UniversityOnlyAnswerGenerator:
     drop-in swap for ClaudeAnswerGenerator/GroqAnswerGenerator later. DialogueManager itself
     doesn't change either way."""
 
-    def generate_grounded_answer(
-        self, question: str, chunks: list[KnowledgeChunk]
-    ) -> str:
+    def generate_grounded_answer(self, question: str, chunks: list[KnowledgeChunk]) -> str:
         # No LLM to synthesize/rephrase multiple chunks - just speak the single best-matching
         # chunk verbatim. Zero hallucination risk since there's no generation step at all, but
         # it'll sound exactly like however the knowledge-base text was written - Stage 07 will
@@ -1366,7 +1405,9 @@ def _build_cloud_generators() -> list[tuple[str, object]]:
         try:
             built.append((display, make()))
         except Exception as exc:  # e.g. the SDK for that backend is not installed
-            print(f"[answers] {display} has a key but could not start ({exc!r}) - skipping it.")
+            log.warning(
+                f"[answers] {display} has a key but could not start ({exc!r}) - skipping it."
+            )
     return built
 
 
@@ -1383,7 +1424,7 @@ def _build_local_generator(warm: bool = True):
     try:
         generator = OllamaAnswerGenerator()
     except Exception as exc:
-        print(f"[ollama] local model unavailable: {exc}")
+        log.warning(f"[ollama] local model unavailable: {exc}")
         return None
 
     if warm:
@@ -1393,17 +1434,17 @@ def _build_local_generator(warm: bool = True):
             import ollama_client
 
             elapsed = ollama_client.warm_up(generator.model)
-            print(f"[ollama] {generator.model} warmed up in {elapsed:.1f}s.")
+            log.info(f"[ollama] {generator.model} warmed up in {elapsed:.1f}s.")
         except Exception as exc:
             # It answered is_available() a moment ago, so this is worth reporting but not worth
             # dropping the backend over - the first real question will simply pay the load.
-            print(f"[ollama] warm-up failed ({exc!r}) - keeping the backend anyway.")
+            log.warning(f"[ollama] warm-up failed ({exc!r}) - keeping the backend anyway.")
     return "Ollama", generator
 
 
 def _build_answer_generator():
     if MODE == "university_only":
-        print(
+        log.info(
             "Running in university-only mode (no LLM at all) - answers are quoted directly "
             "from the knowledge base, and anything else gets the fixed apology instead of open "
             'conversation. Set MODE = "auto" in this file to use a cloud API and/or a local '
@@ -1416,9 +1457,9 @@ def _build_answer_generator():
         if local is None:
             raise RuntimeError(
                 'MODE = "ollama_only" but the local model is not usable (see the message above). '
-                "Install/pull it, or switch MODE back to \"auto\"."
+                'Install/pull it, or switch MODE back to "auto".'
             )
-        print(f"Using the local model only: {local[1].model}.")
+        log.info(f"Using the local model only: {local[1].model}.")
         return local[1]
 
     if MODE == "full":
@@ -1428,12 +1469,12 @@ def _build_answer_generator():
                 'MODE = "full" but no API key found - set GEMINI_API_KEY or GROQ_API_KEY (see '
                 'README.md), or use MODE = "auto" to fall back to a local Ollama model.'
             )
-        print(f"Using {cloud[0]} only (MODE = \"full\" - no local fallback).")
+        log.info(f'Using {cloud[0]} only (MODE = "full" - no local fallback).')
         return cloud[1]
 
     # --- MODE == "auto" ---------------------------------------------------------------------
     if MODE != "auto":
-        print(f'Unknown MODE={MODE!r} - treating it as "auto".')
+        log.info(f'Unknown MODE={MODE!r} - treating it as "auto".')
 
     order = RT.answer_backend_order()
     backends = list(_build_cloud_generators())
@@ -1441,12 +1482,15 @@ def _build_answer_generator():
         local = _build_local_generator()
         if local is not None:
             # Ollama goes where ANSWER_BACKENDS puts it (normally last).
-            position = sum(1 for k in order[:order.index("ollama")] if k != "ollama"
-                           and any(n.lower() == k for n, _ in backends))
+            position = sum(
+                1
+                for k in order[: order.index("ollama")]
+                if k != "ollama" and any(n.lower() == k for n, _ in backends)
+            )
             backends.insert(position, local)
 
     if not backends:
-        print(
+        log.warning(
             "No LLM backend is available - no GEMINI_API_KEY/GROQ_API_KEY is set, and no local "
             "Ollama model is usable. Falling back to university-only answers: real knowledge-base "
             "retrieval still works and is still accurate, but general conversation is off and "
@@ -1457,16 +1501,20 @@ def _build_answer_generator():
 
     if len(backends) == 1:
         name, generator = backends[0]
-        note = ("no local Ollama fallback - if this API goes down mid-conversation the robot "
-                "drops to knowledge-base answers only"
-                if name != "Ollama" else
-                "no cloud API key set, so this is also the fallback")
-        print(f"Answer backend: {name} ({note}).")
+        note = (
+            "no local Ollama fallback - if this API goes down mid-conversation the robot "
+            "drops to knowledge-base answers only"
+            if name != "Ollama"
+            else "no cloud API key set, so this is also the fallback"
+        )
+        log.info(f"Answer backend: {name} ({note}).")
         return generator
 
     chain = ChainAnswerGenerator(backends)
-    print(f"Answer backends, in order: {' -> '.join(chain.names)}. Each question tries them in "
-          f"turn, so an API failure costs a retry rather than a bad answer.")
+    log.warning(
+        f"Answer backends, in order: {' -> '.join(chain.names)}. Each question tries them in "
+        f"turn, so an API failure costs a retry rather than a bad answer."
+    )
     return chain
 
 
@@ -1483,8 +1531,10 @@ def _run_chain_self_test() -> int:
 
     local = _build_local_generator(warm=True)
     if local is None:
-        print("\nSKIPPED: this test needs a working local Ollama backend (see the message "
-              "above, and README.md's 'Local LLM via Ollama').")
+        print(
+            "\nSKIPPED: this test needs a working local Ollama backend (see the message "
+            "above, and README.md's 'Local LLM via Ollama')."
+        )
         return 1
 
     class _BrokenCloudGenerator:
@@ -1544,8 +1594,7 @@ def _run_chain_self_test() -> int:
     chain = ChainAnswerGenerator([("BrokenCloud", broken), local])
     _, general = chain.classify_and_answer_general("tell me something interesting about libraries")
     all_ok &= _check(
-        f"a 429 on the cloud backend still produces a general answer "
-        f"({general[:60]!r}...)",
+        f"a 429 on the cloud backend still produces a general answer " f"({general[:60]!r}...)",
         bool(general) and broken.general_calls == 1,
     )
 
@@ -1560,10 +1609,12 @@ def _run_chain_self_test() -> int:
     # 4. every backend down must RAISE, not invent - dialogue_manager.py's handle_question()
     #    owns what happens next (a live search, then the chunk verbatim), and a chain that
     #    quietly returned something here would take that decision away from it.
-    chain = ChainAnswerGenerator([
-        ("BrokenCloud", _BrokenCloudGenerator("503")),
-        ("BrokenLocal", _BrokenCloudGenerator("connection refused")),
-    ])
+    chain = ChainAnswerGenerator(
+        [
+            ("BrokenCloud", _BrokenCloudGenerator("503")),
+            ("BrokenLocal", _BrokenCloudGenerator("connection refused")),
+        ]
+    )
     try:
         chain.generate_grounded_answer("where is the engineering department", [chunk])
         raised = False
@@ -1647,30 +1698,36 @@ def _run_chain_self_test() -> int:
 
     print()
     if all_ok:
-        print("OK: a cloud backend that 503s, 429s, or returns nothing costs one retry against "
-              "the local model instead of a wrong answer; a dead one is found while the visitor "
-              "is still walking up, so their questions never wait on it; and a fully dead chain "
-              "hands the decision back to DialogueManager rather than making one up.")
+        print(
+            "OK: a cloud backend that 503s, 429s, or returns nothing costs one retry against "
+            "the local model instead of a wrong answer; a dead one is found while the visitor "
+            "is still walking up, so their questions never wait on it; and a fully dead chain "
+            "hands the decision back to DialogueManager rather than making one up."
+        )
         return 0
     print("One or more checks failed - see above.")
     return 1
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     if "--self-test" in sys.argv:
         raise SystemExit(_run_chain_self_test())
 
     kb = KnowledgeBase()
     kb.upsert_many(list(SAMPLE_CHUNKS))
-    print(f"Knowledge base: {len(kb)} chunk(s), embedded by {kb.embedding_model} "
-          f"(relevance threshold {kb.similarity_threshold}).")
+    print(
+        f"Knowledge base: {len(kb)} chunk(s), embedded by {kb.embedding_model} "
+        f"(relevance threshold {kb.similarity_threshold})."
+    )
 
     # Says out loud who the robot currently thinks it is and where that came from (MySQL, the
     # offline cache, or the built-in seed) - the identity answers below are only as right as
     # that, and this REPL is where they get tried out.
     me = get_identity()
-    print(f"Identity: {me.robot_name}, created by {me.creator_name} "
-          f"(from {identity_source()}).")
+    print(
+        f"Identity: {me.robot_name}, created by {me.creator_name} " f"(from {identity_source()})."
+    )
 
     generator = _build_answer_generator()
     dm = DialogueManager(kb, generator)

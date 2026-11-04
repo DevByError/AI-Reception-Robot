@@ -55,14 +55,23 @@ def quick(monkeypatch):
 def _listen(frames):
     """Runs the listener on a thread: if the turn never ends it blocks on an empty microphone
     queue, which must fail the test, not hang it."""
-    q: "queue.Queue[bytes]" = queue.Queue()
+    q: queue.Queue[bytes] = queue.Queue()
     for f in frames:
         q.put(f)
     engine = _Engine()
     result: list = []
-    worker = threading.Thread(target=lambda: result.append(stt.listen_for_one_utterance(
-        engine, stt.STTListener(engine, stt.PatientVAD(), locale="en-US"), _AlwaysSpeech(), q,
-        timeout_s=5.0)), daemon=True)
+    worker = threading.Thread(
+        target=lambda: result.append(
+            stt.listen_for_one_utterance(
+                engine,
+                stt.STTListener(engine, stt.PatientVAD(), locale="en-US"),
+                _AlwaysSpeech(),
+                q,
+                timeout_s=5.0,
+            )
+        ),
+        daemon=True,
+    )
     worker.start()
     worker.join(timeout=20)
     assert result, "the turn never ended - the background voices held it open"
@@ -70,8 +79,8 @@ def _listen(frames):
 
 
 def test_quieter_background_voices_do_not_hold_the_turn_open(quick, capsys):
-    voice = _tone(-12, 50)                 # 1.5s of the visitor, close to the mic
-    room = _tone(-45, 400)                 # 12s of a conversation across the room
+    voice = _tone(-12, 50)  # 1.5s of the visitor, close to the mic
+    room = _tone(-45, 400)  # 12s of a conversation across the room
     text, used_s = _listen(voice + room)
     assert text == "What is your name?"
     assert used_s < 1.5 + 2.0, f"the turn ran {used_s:.1f}s - background voices kept it open"
@@ -81,9 +90,9 @@ def test_quieter_background_voices_do_not_hold_the_turn_open(quick, capsys):
 
 def test_the_visitor_dropping_their_voice_a_little_is_still_them(monkeypatch):
     monkeypatch.setattr(stt, "VOICE_GATE_DB", 25.0)
-    assert not stt._gated_by_voice_level(-24.0, [-12.0] * 20)   # 12 dB quieter: still them
-    assert stt._gated_by_voice_level(-45.0, [-12.0] * 20)       # 33 dB quieter: someone else
-    assert not stt._gated_by_voice_level(-45.0, [-12.0] * 5)    # too little heard to judge yet
+    assert not stt._gated_by_voice_level(-24.0, [-12.0] * 20)  # 12 dB quieter: still them
+    assert stt._gated_by_voice_level(-45.0, [-12.0] * 20)  # 33 dB quieter: someone else
+    assert not stt._gated_by_voice_level(-45.0, [-12.0] * 5)  # too little heard to judge yet
 
 
 def test_gate_off_when_set_to_zero(monkeypatch):
@@ -94,7 +103,8 @@ def test_gate_off_when_set_to_zero(monkeypatch):
 def test_mic_line_reports_clipping(capsys):
     frames = _tone(-6, 20, clip=True)
     clipped = sum(stt._clipped_samples(f) for f in frames)
-    stt._report_mic_levels([stt._frame_dbfs(f) for f in frames], [-46.0] * 20,
-                           clipped, len(frames) * FRAME, 0)
+    stt._report_mic_levels(
+        [stt._frame_dbfs(f) for f in frames], [-46.0] * 20, clipped, len(frames) * FRAME, 0
+    )
     out = capsys.readouterr().out
     assert "CLIPPING" in out and "Microphone Boost" in out

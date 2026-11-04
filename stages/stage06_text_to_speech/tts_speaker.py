@@ -7,11 +7,8 @@ must be understandable purely by voice.
 
 Success criterion (STAGES.md): Time-To-First-Audio < 1-2 seconds for a medium-length sentence.
 
-TODO (real implementation later):
-  - replace MockTTSEngine with a real engine (e.g. local Piper or a cloud streaming TTS
-    service).
-  - split long sentences into sub-sentences so speech can start before the full LLM answer has
-    finished generating.
+This file holds the interfaces and mocks used by the self-tests. The real speaker (Kokoro or
+Piper, sentence-by-sentence streaming) is tts_speaker_live.py.
 """
 
 from __future__ import annotations
@@ -28,8 +25,7 @@ class AudioChunk:
 
 
 class TTSEngine(Protocol):
-    def synthesize_stream(self, text: str, locale: str) -> list[AudioChunk]:
-        ...
+    def synthesize_stream(self, text: str, locale: str) -> list[AudioChunk]: ...
 
 
 class MockTTSEngine:
@@ -58,7 +54,7 @@ class TTSSpeaker:
         start = time.monotonic()
         chunks = self.engine.synthesize_stream(text, self.locale)
         ttfa_ms = (time.monotonic() - start) * 1000  # near-zero with the mock - real measurement
-                                                       # comes later
+        # comes later
 
         for chunk in chunks:
             print(f'[TTS/{self.locale}] "{chunk.text_segment}" (~{chunk.duration_ms}ms)')
@@ -75,9 +71,13 @@ if __name__ == "__main__":
         "The Computer Science department office is right there."
     )
 
-    print(f"\nTime-To-First-Audio: {result['time_to_first_audio_ms']:.1f}ms, "
-          f"segments={result['num_segments']}")
+    print(
+        f"\nTime-To-First-Audio: {result['time_to_first_audio_ms']:.1f}ms, "
+        f"segments={result['num_segments']}"
+    )
 
     assert result["num_segments"] == 3
-    print("\nOK: splitting text into segments + measuring time-to-first-audio works - ready to "
-          "wire in a real TTS engine.")
+    print(
+        "\nOK: splitting text into segments + measuring time-to-first-audio works - ready to "
+        "wire in a real TTS engine."
+    )

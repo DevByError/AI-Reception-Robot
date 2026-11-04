@@ -8,21 +8,14 @@ in the index, with no manual intervention.
 This is the "bridge" between the background flow (data updates) and the real-time flow (student
 dialogue) shown in ARCHITECTURE.md sections 2 and 3.
 
-TODO (real implementation later):
-  - wire this into a real scheduler (cron / APScheduler) instead of a manual loop call.
-
-Note: embedding is already real, not a TODO - KnowledgeBase.upsert() (knowledge_base.py) embeds
-every chunk with a local sentence-transformers model as soon as it's indexed here.
-
-Note: chunk_text() is also real now, not a TODO - it splits by paragraph/sentence boundaries
-(via a simple regex, same style as Stage 06's SENTENCE_SPLIT_RE) instead of blindly cutting
-every ~200 characters mid-word. This matters more now that Stage 07's scraper feeds in real
-page content (FAQ Q&A pairs, Subject Highlights tables, multi-paragraph overviews) instead of
-one-line mock strings - naive word-count chunking would otherwise slice sentences in half.
+The periodic refresh runs inside main_live.py. KnowledgeBase.upsert() embeds each chunk as it
+is indexed. chunk_text() splits on paragraph and sentence boundaries so scraped pages (FAQ pairs,
+tables, long overviews) are not cut mid-sentence.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import sys
 import time
@@ -120,6 +113,7 @@ def run_update_cycle(
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     # Real self-test: hits the actual lincoln.edu.my site over the network (see scraper.py's
     # module docstring for why this can't run inside the network-restricted sandbox this was
     # built in). Uses a single real school page to keep the test quick and polite.
@@ -148,5 +142,7 @@ if __name__ == "__main__":
     # page" path above, rather than depending on leftover state from a prior run.
     Path(__file__).resolve().parent.joinpath("snapshot_selftest.json").unlink(missing_ok=True)
 
-    print("\nOK: the periodic update feeds the dialogue knowledge base automatically from the "
-          "real site, without re-indexing when nothing changed.")
+    print(
+        "\nOK: the periodic update feeds the dialogue knowledge base automatically from the "
+        "real site, without re-indexing when nothing changed."
+    )

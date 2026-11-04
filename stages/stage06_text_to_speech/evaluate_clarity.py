@@ -20,11 +20,13 @@ Run: python evaluate_clarity.py
 
 from __future__ import annotations
 
+import logging
+import sys
 import tempfile
 import wave
 from pathlib import Path
 
-from tts_speaker_live import LiveTTSSpeaker, VOICE_NAME, _sanitize_for_speech, _split_sentences
+from tts_speaker_live import VOICE_NAME, LiveTTSSpeaker, _sanitize_for_speech, _split_sentences
 
 # Numbers written as words ("fourth", not "4th") - Piper/espeak-ng correctly SAYS "4th" as
 # "fourth", but comparing spoken "fourth" against a written reference of "4th" would count as a
@@ -65,23 +67,27 @@ def main() -> None:
         import jiwer
         from faster_whisper import WhisperModel
     except ImportError:
-        print("Missing faster-whisper/jiwer - these are stage04's dependencies, needed here "
-              "too to actually score clarity. Run: pip install -r "
-              "..\\stage04_speech_to_text\\requirements.txt")
+        print(
+            "Missing faster-whisper/jiwer - these are stage04's dependencies, needed here "
+            "too to actually score clarity. Run: pip install -r "
+            "..\\stage04_speech_to_text\\requirements.txt"
+        )
         return
 
     # jiwer's wer() does NO normalization by default - "Hi there!" vs "Hi there," or
     # "Computer" vs "computer" score as full word errors even though the actual words match.
     # Case and punctuation don't affect intelligibility, so strip them before comparing -
     # otherwise this eval measures transcription formatting, not clarity.
-    normalize = jiwer.Compose([
-        jiwer.ToLowerCase(),
-        jiwer.RemovePunctuation(),
-        jiwer.RemoveMultipleSpaces(),
-        jiwer.Strip(),
-        jiwer.RemoveEmptyStrings(),
-        jiwer.ReduceToListOfListOfWords(),
-    ])
+    normalize = jiwer.Compose(
+        [
+            jiwer.ToLowerCase(),
+            jiwer.RemovePunctuation(),
+            jiwer.RemoveMultipleSpaces(),
+            jiwer.Strip(),
+            jiwer.RemoveEmptyStrings(),
+            jiwer.ReduceToListOfListOfWords(),
+        ]
+    )
 
     print(f"Loading Piper voice '{VOICE_NAME}' + Whisper STT (pulls in both stages' models)...")
     speaker = LiveTTSSpeaker()
@@ -99,14 +105,18 @@ def main() -> None:
                 continue
 
             segments, _info = stt_model.transcribe(
-                str(wav_path), language="en", condition_on_previous_text=False,
+                str(wav_path),
+                language="en",
+                condition_on_previous_text=False,
             )
             hypothesis = " ".join(seg.text.strip() for seg in segments).strip()
 
             sample_wer = (
-                jiwer.wer(text, hypothesis, reference_transform=normalize,
-                          hypothesis_transform=normalize)
-                if hypothesis else 1.0
+                jiwer.wer(
+                    text, hypothesis, reference_transform=normalize, hypothesis_transform=normalize
+                )
+                if hypothesis
+                else 1.0
             )
             all_wer.append(sample_wer)
             print(f"{text[:68]:<70} {sample_wer:>5.1%}")
@@ -128,4 +138,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     main()

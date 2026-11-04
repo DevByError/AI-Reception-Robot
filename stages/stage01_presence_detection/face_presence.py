@@ -27,16 +27,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
-import numpy as np
-
 from presence_detector import DetectedPerson
 
-DETECTION_MODEL = (Path(__file__).resolve().parents[1] / "stage02_face_recognition"
-                   / "face_detection_yunet_2023mar.onnx")
+DETECTION_MODEL = (
+    Path(__file__).resolve().parents[1]
+    / "stage02_face_recognition"
+    / "face_detection_yunet_2023mar.onnx"
+)
 
-DETECT_WIDTH = 640           # detection runs at this width; boxes are scaled back up
-SCORE_THRESHOLD = 0.6        # a little looser than recognition's 0.7 - presence, not identity
-NEAR_FACE_FRACTION = 0.05    # face width / frame width at or above which a face counts as "near"
+DETECT_WIDTH = 640  # detection runs at this width; boxes are scaled back up
+SCORE_THRESHOLD = 0.6  # a little looser than recognition's 0.7 - presence, not identity
+NEAR_FACE_FRACTION = 0.05  # face width / frame width at or above which a face counts as "near"
 
 # Tracker: how far (as a fraction of the larger box side) a face may move between two processed
 # frames and still be the same person, and how many processed frames a track survives unseen.
@@ -47,6 +48,7 @@ MAX_MISSED = 6
 @dataclass
 class FacePerson(DetectedPerson):
     """A DetectedPerson found by its face. Adds what the engagement gate needs."""
+
     landmarks: tuple[tuple[int, int], ...] = ()
     score: float = 1.0
     frame_width: int = 0
@@ -95,7 +97,7 @@ class FaceTracker:
                     pairs.append((d, i, t))
         pairs.sort(key=lambda p: p[0])
         used_tracks: set[int] = set()
-        for d, i, t in pairs:
+        for _d, i, t in pairs:
             if assigned[i] is not None or t.track_id in used_tracks:
                 continue
             assigned[i] = t.track_id
@@ -132,13 +134,16 @@ class FacePresenceDetector:
         self._size = (0, 0)
         self.tracker = FaceTracker()
 
-    def detect_faces(self, frame) -> list[tuple[tuple[int, int, int, int],
-                                               tuple[tuple[int, int], ...], float]]:
+    def detect_faces(
+        self, frame
+    ) -> list[tuple[tuple[int, int, int, int], tuple[tuple[int, int], ...], float]]:
         """(bbox, landmarks, score) per face, in FULL-frame pixel coordinates."""
         h, w = frame.shape[:2]
         scale = min(1.0, self.detect_width / float(w))
-        small = frame if scale == 1.0 else cv2.resize(
-            frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
+        small = (
+            frame
+            if scale == 1.0
+            else cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
         )
         sh, sw = small.shape[:2]
         if (sw, sh) != self._size:
@@ -163,10 +168,16 @@ class FacePresenceDetector:
         people = []
         for (bbox, landmarks, score), tid in zip(faces, ids):
             near = bbox[2] >= NEAR_FACE_FRACTION * width
-            people.append(FacePerson(
-                track_id=tid, bbox=bbox, distance_estimate="near" if near else "far",
-                landmarks=landmarks, score=score, frame_width=width,
-            ))
+            people.append(
+                FacePerson(
+                    track_id=tid,
+                    bbox=bbox,
+                    distance_estimate="near" if near else "far",
+                    landmarks=landmarks,
+                    score=score,
+                    frame_width=width,
+                )
+            )
         return people
 
 
@@ -187,10 +198,14 @@ def _demo() -> None:
                 x, y, w, h = p.bbox
                 yaw = face_yaw(p.landmarks)
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
-                label = f"#{p.track_id} {p.distance_estimate} yaw={yaw:+.2f}" if yaw is not None \
+                label = (
+                    f"#{p.track_id} {p.distance_estimate} yaw={yaw:+.2f}"
+                    if yaw is not None
                     else f"#{p.track_id} {p.distance_estimate}"
-                cv2.putText(frame, label, (x, max(15, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                            (0, 200, 0), 2)
+                )
+                cv2.putText(
+                    frame, label, (x, max(15, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2
+                )
             cv2.imshow("face presence (q to quit)", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break

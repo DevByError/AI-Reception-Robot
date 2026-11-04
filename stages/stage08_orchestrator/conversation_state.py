@@ -34,12 +34,15 @@ Run `python conversation_state.py` for the self-test (no hardware, no models).
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
 from realtime_config import RT  # noqa: E402
@@ -84,32 +87,65 @@ _ALLOWED: dict[ConvState, frozenset[ConvState]] = {
     ConvState.IDLE: frozenset({ConvState.LISTENING, ConvState.AI_SPEAKING}),
     # AI_SPEAKING from IDLE is the proactive greeting: the robot speaks first, before anybody
     # has said anything to it. That edge is the whole premise of Stage 03.
-    ConvState.LISTENING: frozenset({
-        ConvState.USER_SPEAKING, ConvState.IDLE, ConvState.THINKING, ConvState.AI_SPEAKING,
-    }),
+    ConvState.LISTENING: frozenset(
+        {
+            ConvState.USER_SPEAKING,
+            ConvState.IDLE,
+            ConvState.THINKING,
+            ConvState.AI_SPEAKING,
+        }
+    ),
     # LISTENING -> THINKING is a listen that timed out or came back empty and is being handled;
     # LISTENING -> AI_SPEAKING is the robot re-prompting ("anything else?") without having heard
     # anything.
-    ConvState.USER_SPEAKING: frozenset({
-        ConvState.USER_PAUSED, ConvState.USER_FINISHED, ConvState.LISTENING, ConvState.IDLE,
-    }),
+    ConvState.USER_SPEAKING: frozenset(
+        {
+            ConvState.USER_PAUSED,
+            ConvState.USER_FINISHED,
+            ConvState.LISTENING,
+            ConvState.IDLE,
+        }
+    ),
     # USER_SPEAKING -> LISTENING is the too-short clip being discarded (a cough): speech was
     # detected, then rejected, and the robot goes back to waiting without a turn having happened.
-    ConvState.USER_PAUSED: frozenset({
-        ConvState.USER_SPEAKING, ConvState.USER_FINISHED, ConvState.LISTENING, ConvState.IDLE,
-    }),
-    ConvState.USER_FINISHED: frozenset({
-        ConvState.THINKING, ConvState.LISTENING, ConvState.IDLE, ConvState.AI_SPEAKING,
-    }),
-    ConvState.THINKING: frozenset({
-        ConvState.AI_SPEAKING, ConvState.LISTENING, ConvState.IDLE,
-    }),
-    ConvState.AI_SPEAKING: frozenset({
-        ConvState.INTERRUPTED, ConvState.LISTENING, ConvState.IDLE, ConvState.THINKING,
-    }),
-    ConvState.INTERRUPTED: frozenset({
-        ConvState.LISTENING, ConvState.USER_SPEAKING, ConvState.IDLE,
-    }),
+    ConvState.USER_PAUSED: frozenset(
+        {
+            ConvState.USER_SPEAKING,
+            ConvState.USER_FINISHED,
+            ConvState.LISTENING,
+            ConvState.IDLE,
+        }
+    ),
+    ConvState.USER_FINISHED: frozenset(
+        {
+            ConvState.THINKING,
+            ConvState.LISTENING,
+            ConvState.IDLE,
+            ConvState.AI_SPEAKING,
+        }
+    ),
+    ConvState.THINKING: frozenset(
+        {
+            ConvState.AI_SPEAKING,
+            ConvState.LISTENING,
+            ConvState.IDLE,
+        }
+    ),
+    ConvState.AI_SPEAKING: frozenset(
+        {
+            ConvState.INTERRUPTED,
+            ConvState.LISTENING,
+            ConvState.IDLE,
+            ConvState.THINKING,
+        }
+    ),
+    ConvState.INTERRUPTED: frozenset(
+        {
+            ConvState.LISTENING,
+            ConvState.USER_SPEAKING,
+            ConvState.IDLE,
+        }
+    ),
 }
 
 
@@ -221,8 +257,10 @@ class ConversationStateMachine:
             if self._debug:
                 tail = f" ({note})" if note else ""
                 flag = "" if allowed else "  << UNEXPECTED - not in the transition table"
-                print(f"[STATE] {previous.name} -> {new_state.name}"
-                      f"  after {held_ms:.0f}ms{tail}{flag}")
+                log.info(
+                    f"[STATE] {previous.name} -> {new_state.name}"
+                    f"  after {held_ms:.0f}ms{tail}{flag}"
+                )
 
         # Outside the lock deliberately: a callback is caller code (it draws the robot's face)
         # and must never be able to deadlock the audio threads by calling back in.
@@ -230,8 +268,10 @@ class ConversationStateMachine:
             try:
                 self._on_change(previous, new_state)
             except Exception as exc:  # noqa: BLE001
-                print(f"[STATE] state-change callback failed ({exc!r}) - ignoring; the "
-                      f"conversation itself is unaffected.")
+                log.warning(
+                    f"[STATE] state-change callback failed ({exc!r}) - ignoring; the "
+                    f"conversation itself is unaffected."
+                )
         return new_state
 
     def _record_timing(self, previous: ConvState, new_state: ConvState, now: float) -> None:
@@ -275,9 +315,7 @@ def _self_test() -> None:
     print("--- conversation state machine self-test ---\n")
 
     seen: list[tuple[str, str]] = []
-    sm = ConversationStateMachine(
-        on_change=lambda a, b: seen.append((a.name, b.name)), debug=True
-    )
+    sm = ConversationStateMachine(on_change=lambda a, b: seen.append((a.name, b.name)), debug=True)
     assert sm.state is ConvState.IDLE
 
     # --- the ordinary turn, including a mid-sentence pause -----------------------------------
@@ -346,8 +384,14 @@ def _self_test() -> None:
     # Three threads hammering transitions, mirroring the visit/barge-in/camera threads. The
     # assertion is only that it stays internally consistent and never deadlocks.
     sm5 = ConversationStateMachine(debug=False)
-    ring = [ConvState.LISTENING, ConvState.USER_SPEAKING, ConvState.USER_PAUSED,
-            ConvState.USER_FINISHED, ConvState.THINKING, ConvState.AI_SPEAKING]
+    ring = [
+        ConvState.LISTENING,
+        ConvState.USER_SPEAKING,
+        ConvState.USER_PAUSED,
+        ConvState.USER_FINISHED,
+        ConvState.THINKING,
+        ConvState.AI_SPEAKING,
+    ]
 
     def _churn():
         for _ in range(300):
@@ -362,11 +406,14 @@ def _self_test() -> None:
     assert all(not t.is_alive() for t in threads), "state machine deadlocked under concurrency"
     assert sm5.state in ring
     assert len(sm5._history) <= 200, "history must stay bounded over a long visit"
-    print(f"\nconcurrency: survived 3 threads x 1800 transitions, "
-          f"history bounded at {len(sm5._history)}")
+    print(
+        f"\nconcurrency: survived 3 threads x 1800 transitions, "
+        f"history bounded at {len(sm5._history)}"
+    )
 
     print("\nOK: all conversation state machine checks passed.")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     _self_test()

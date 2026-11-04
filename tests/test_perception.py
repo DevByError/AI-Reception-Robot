@@ -4,7 +4,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from addressee import AddresseeJudge, FaceSample, LipHistory, find_wake_word, wake_phrases
 from engagement import EngagementTracker, face_yaw, is_facing, is_near
 from face_presence import FaceTracker
@@ -33,7 +32,7 @@ def test_engagement_needs_dwell_and_survives_a_blink():
     box = (500, 300, 100, 120)
     assert not e.observe(1, box, STRAIGHT, 1280, now=0.0)
     assert not e.observe(1, box, STRAIGHT, 1280, now=0.6)
-    assert not e.observe(1, box, TURNED, 1280, now=0.8)      # a glance away inside the grace
+    assert not e.observe(1, box, TURNED, 1280, now=0.8)  # a glance away inside the grace
     assert e.observe(1, box, STRAIGHT, 1280, now=1.05)
     # a passer-by: far away, never engaged however long they are visible
     for t in range(0, 30):
@@ -48,7 +47,7 @@ def test_engagement_restarts_after_turning_away_for_long():
     box = (500, 300, 100, 120)
     e.observe(1, box, STRAIGHT, 1280, now=0.0)
     e.observe(1, box, TURNED, 1280, now=0.9)
-    e.observe(1, box, TURNED, 1280, now=1.6)                 # away for > grace
+    e.observe(1, box, TURNED, 1280, now=1.6)  # away for > grace
     assert not e.observe(1, box, STRAIGHT, 1280, now=1.7)
     assert e.observe(1, box, STRAIGHT, 1280, now=2.8)
 
@@ -58,11 +57,11 @@ def test_face_tracker_keeps_ids_through_small_moves_and_misses():
     a = t.update([(100, 100, 80, 100), (600, 100, 80, 100)])
     b = t.update([(110, 105, 80, 100), (590, 100, 80, 100)])
     assert a == b
-    t.update([(115, 105, 80, 100)])                          # second face missed one frame
+    t.update([(115, 105, 80, 100)])  # second face missed one frame
     c = t.update([(118, 105, 80, 100), (595, 100, 80, 100)])
     assert c == a
     d = t.update([(118, 105, 80, 100), (1000, 400, 80, 100)])
-    assert d[0] == a[0] and d[1] not in a                   # a new person gets a new id
+    assert d[0] == a[0] and d[1] not in a  # a new person gets a new id
 
 
 @pytest.mark.skipif(not SAMPLE_FACE.exists(), reason="tests/data/face.jpg missing")
@@ -82,7 +81,10 @@ def test_yunet_presence_finds_a_real_face():
 
 def test_wake_word_found_and_removed():
     phrases = wake_phrases("Nova", "excuse me")
-    assert find_wake_word("Hey Nova, where is the library?", phrases) == (True, "where is the library?")
+    assert find_wake_word("Hey Nova, where is the library?", phrases) == (
+        True,
+        "where is the library?",
+    )
     assert find_wake_word("where's the library, Nova?", phrases) == (True, "where's the library")
     assert find_wake_word("Excuse me where is the bursary", phrases)[0]
     assert find_wake_word("I love innovation", phrases) == (False, "I love innovation")
@@ -129,7 +131,7 @@ def test_addressee_without_camera_evidence():
 
 
 def test_only_visitor_facing_with_weak_lip_signal_is_answered():
-    frames = [[FaceSample(1, i % 10 == 0, True)] for i in range(20)]   # lips seen moving 10%
+    frames = [[FaceSample(1, i % 10 == 0, True)] for i in range(20)]  # lips seen moving 10%
     d = AddresseeJudge().decide("where is the library", *_history(frames).summarize(0, 2))
     assert d.addressed
 
@@ -143,7 +145,7 @@ def test_engagement_works_when_the_camera_loop_is_slow(fps):
     step = 1.0 / fps
     t, engaged_at = 0.0, None
     while t < 4.0 and engaged_at is None:
-        landmarks = TURNED if abs(t - step) < 1e-9 else STRAIGHT   # one glance away
+        landmarks = TURNED if abs(t - step) < 1e-9 else STRAIGHT  # one glance away
         if e.observe(1, box, landmarks, 1280, now=t):
             engaged_at = t
         t += step

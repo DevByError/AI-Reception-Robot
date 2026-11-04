@@ -32,29 +32,31 @@ import time
 import cv2
 import numpy as np
 
-BG = (24, 18, 14)            # BGR
+BG = (24, 18, 14)  # BGR
 EYE = (245, 225, 170)
 ACCENT = (230, 170, 60)
 MOUTH = (220, 200, 160)
 
 
 class FaceDisplay:
-    def __init__(self, width: int = 800, height: int = 480, window: str = "Nova",
-                 fullscreen: bool = False):
+    def __init__(
+        self, width: int = 800, height: int = 480, window: str = "Nova", fullscreen: bool = False
+    ):
         self.width, self.height = width, height
         self.window = window
         self.fullscreen = fullscreen
         self._opened = False
         self._next_blink = time.monotonic() + random.uniform(2.5, 5.0)
         self._blink_until = 0.0
-        self._mouth = 0.0           # smoothed opening, 0..1
-        self._look = 0.0            # smoothed gaze, -1..1
+        self._mouth = 0.0  # smoothed opening, 0..1
+        self._look = 0.0  # smoothed gaze, -1..1
         self._state_since = time.monotonic()
         self._state = "IDLE"
 
     # -- drawing -----------------------------------------------------------------------------------
-    def render(self, state: str, level: float = 0.0, look_x: float = 0.0,
-               now: float | None = None) -> np.ndarray:
+    def render(
+        self, state: str, level: float = 0.0, look_x: float = 0.0, now: float | None = None
+    ) -> np.ndarray:
         """The face as a BGR image. `state` is a ConvState name (or IDLE/GREETING)."""
         now = time.monotonic() if now is None else now
         if state != self._state:
@@ -85,7 +87,7 @@ class FaceDisplay:
         if state == "INTERRUPTED" and in_state < 0.4:
             eye_h = int(eye_h * 1.25)
         if state == "IDLE":
-            eye_h = int(eye_h * (0.97 + 0.03 * math.sin(now * 1.3)))   # breathing
+            eye_h = int(eye_h * (0.97 + 0.03 * math.sin(now * 1.3)))  # breathing
         if blinking:
             eye_h = max(4, int(eye_h * 0.08))
 
@@ -93,9 +95,15 @@ class FaceDisplay:
         for side in (-1, 1):
             cx = w // 2 + side * int(w * 0.17) + gx
             cv2.ellipse(img, (cx, cy), (eye_w, eye_h), 0, 0, 360, EYE, -1, cv2.LINE_AA)
-            if not blinking:   # a highlight makes the eyes read as eyes, not ovals
-                cv2.circle(img, (cx - eye_w // 3, cy - eye_h // 3), max(3, eye_w // 5),
-                           (255, 255, 255), -1, cv2.LINE_AA)
+            if not blinking:  # a highlight makes the eyes read as eyes, not ovals
+                cv2.circle(
+                    img,
+                    (cx - eye_w // 3, cy - eye_h // 3),
+                    max(3, eye_w // 5),
+                    (255, 255, 255),
+                    -1,
+                    cv2.LINE_AA,
+                )
 
         # Mouth: follows the voice level while speaking, a calm line otherwise.
         target = min(1.0, level * 1.6) if level > 0.02 else 0.0
@@ -103,12 +111,20 @@ class FaceDisplay:
         mx, my = w // 2 + gx // 2, int(h * 0.74)
         mouth_w = int(w * 0.11)
         if self._mouth > 0.05:
-            cv2.ellipse(img, (mx, my), (mouth_w, max(3, int(h * 0.09 * self._mouth))), 0, 0,
-                        360, MOUTH, -1, cv2.LINE_AA)
+            cv2.ellipse(
+                img,
+                (mx, my),
+                (mouth_w, max(3, int(h * 0.09 * self._mouth))),
+                0,
+                0,
+                360,
+                MOUTH,
+                -1,
+                cv2.LINE_AA,
+            )
         else:
             curve = 10 if state not in ("THINKING", "USER_SPEAKING") else 4
-            cv2.ellipse(img, (mx, my - curve), (mouth_w, curve), 0, 20, 160, MOUTH, 4,
-                        cv2.LINE_AA)
+            cv2.ellipse(img, (mx, my - curve), (mouth_w, curve), 0, 20, 160, MOUTH, 4, cv2.LINE_AA)
 
         # Listening ring and thinking dots.
         if state in ("LISTENING", "USER_SPEAKING", "USER_PAUSED", "INTERRUPTED"):
@@ -122,8 +138,7 @@ class FaceDisplay:
             for i in range(3):
                 phase = (now * 3 - i * 0.5) % 3
                 r = 7 + int(4 * max(0.0, math.sin(phase)))
-                cv2.circle(img, (w // 2 - 30 + i * 30, int(h * 0.90)), r, ACCENT, -1,
-                           cv2.LINE_AA)
+                cv2.circle(img, (w // 2 - 30 + i * 30, int(h * 0.90)), r, ACCENT, -1, cv2.LINE_AA)
         return img
 
     def mouth_opening(self) -> float:
@@ -134,8 +149,7 @@ class FaceDisplay:
         if not self._opened:
             cv2.namedWindow(self.window, cv2.WINDOW_NORMAL)
             if self.fullscreen:
-                cv2.setWindowProperty(self.window, cv2.WND_PROP_FULLSCREEN,
-                                      cv2.WINDOW_FULLSCREEN)
+                cv2.setWindowProperty(self.window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             else:
                 cv2.resizeWindow(self.window, self.width, self.height)
             self._opened = True

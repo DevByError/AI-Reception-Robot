@@ -25,9 +25,14 @@ Run: python tts_speaker_live.py
 
 from __future__ import annotations
 
+import logging
 import queue
 import random
 import re
+import sys
+
+# Same arrangement as stage04: the numbers below keep their names and their comments, and take
+# their defaults from the one config module so a deployment can tune them without a code edit.
 import threading
 import time
 from collections import OrderedDict
@@ -36,30 +41,29 @@ from typing import Iterable, Iterator
 
 import numpy as np
 
-# Same arrangement as stage04: the numbers below keep their names and their comments, and take
-# their defaults from the one config module so a deployment can tune them without a code edit.
-import sys  # noqa: E402
+log = logging.getLogger(__name__)
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "stage00_setup"))
 sys.path.append(str(Path(__file__).resolve().parents[1] / "stage04_speech_to_text"))
-from realtime_config import RT  # noqa: E402
 from audio_player import AudioPlayer  # noqa: E402
+from realtime_config import RT  # noqa: E402
 from voice_backends import load_backend  # noqa: E402
 
 
 def rt_log(tag: str, message: str) -> None:
     """One tagged line of the real-time trace - see stage04's identical helper."""
     if RT.REALTIME_DEBUG:
-        print(f"[{tag}] {message}")
+        log.info(f"[{tag}] {message}")
+
 
 VOICE_NAME = "en_US-amy-medium"  # real Piper voice (rhasspy/piper-voices), female, US English -
-                                  # swapped from the earlier default "en_US-lessac-medium" (male)
-                                  # on 2026-08-19 per explicit request. Same "medium" quality tier
-                                  # as before, so no CPU-speed/latency change from this swap alone
-                                  # - see README.md for how to try a different voice (male or
-                                  # female) and for the one-time model download step (this file
-                                  # will raise FileNotFoundError with the exact download command
-                                  # if en_US-amy-medium.onnx isn't downloaded yet).
+# swapped from the earlier default "en_US-lessac-medium" (male)
+# on 2026-08-19 per explicit request. Same "medium" quality tier
+# as before, so no CPU-speed/latency change from this swap alone
+# - see README.md for how to try a different voice (male or
+# female) and for the one-time model download step (this file
+# will raise FileNotFoundError with the exact download command
+# if en_US-amy-medium.onnx isn't downloaded yet).
 VOICE_MODEL = Path(__file__).resolve().parent / f"{VOICE_NAME}.onnx"
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -93,17 +97,32 @@ MIN_STREAM_SENTENCE_CHARS = RT.TTS_MIN_SENTENCE_CHARS  # default 24
 # ahead of them, so an early break buys no perceptible latency and costs intonation.
 #
 # Set TTS_FIRST_CLAUSE_FLUSH=false to go back to whole sentences throughout.
-FIRST_CLAUSE_RE = re.compile(r"^(.{%d,}?[,;:](?=\s)|.{%d,}?\s+[-–—]\s+)"
-                             % (RT.TTS_FIRST_CLAUSE_MIN_CHARS, RT.TTS_FIRST_CLAUSE_MIN_CHARS),
-                             re.DOTALL)
+FIRST_CLAUSE_RE = re.compile(
+    r"^(.{%d,}?[,;:](?=\s)|.{%d,}?\s+[-–—]\s+)"
+    % (RT.TTS_FIRST_CLAUSE_MIN_CHARS, RT.TTS_FIRST_CLAUSE_MIN_CHARS),
+    re.DOTALL,
+)
 
 # Abbreviations whose trailing period is not a sentence end. Without this the streaming splitter
 # cuts "Dr." / "No." mid-name and Piper reads the fragments with two falling intonations, which
 # is instantly audible as a machine. Short and deliberately incomplete - these are the ones that
 # actually occur in university front-desk answers.
 _ABBREVIATIONS = (
-    "dr.", "mr.", "mrs.", "ms.", "prof.", "st.", "no.", "vs.", "etc.", "e.g.", "i.e.",
-    "jr.", "sr.", "approx.", "dept.",
+    "dr.",
+    "mr.",
+    "mrs.",
+    "ms.",
+    "prof.",
+    "st.",
+    "no.",
+    "vs.",
+    "etc.",
+    "e.g.",
+    "i.e.",
+    "jr.",
+    "sr.",
+    "approx.",
+    "dept.",
 )
 
 
@@ -153,7 +172,7 @@ def _pop_sentence(buffer: str, *, final: bool, first: bool = False) -> tuple[str
                 # full stop), but "No." style fragments can still end the head - reuse the same
                 # guard rather than inventing a second one.
                 if head and not _ends_on_abbreviation(head):
-                    return head, buffer[clause.end():]
+                    return head, buffer[clause.end() :]
         return None, buffer
 
     sentence = match.group(1).strip()
@@ -161,13 +180,13 @@ def _pop_sentence(buffer: str, *, final: bool, first: bool = False) -> tuple[str
         # Not a real boundary (or not worth a separate synthesis call yet) - look for the NEXT
         # terminator instead by leaving the buffer intact and reporting nothing ready. The
         # caller keeps feeding it; the final flush guarantees it is eventually spoken either way.
-        rest = buffer[match.end():]
+        rest = buffer[match.end() :]
         following, remaining = _pop_sentence(rest, final=False)
         if following is None:
             return None, buffer
         return f"{sentence} {following}", remaining
 
-    return sentence, buffer[match.end():]
+    return sentence, buffer[match.end() :]
 
 
 class LiveTTSSpeaker:
@@ -191,11 +210,21 @@ class LiveTTSSpeaker:
     CACHE_MAX_CHARS = 300
     CACHE_MAX_BYTES = 48 * 1024 * 1024
 
-    def __init__(self, model_path: Path = VOICE_MODEL, use_cuda: bool = False,
-                 backend=None, player: AudioPlayer | None = None):
+    def __init__(
+        self,
+        model_path: Path = VOICE_MODEL,
+        use_cuda: bool = False,
+        backend=None,
+        player: AudioPlayer | None = None,
+    ):
         if backend is None:
-            backend = load_backend(RT.TTS_BACKEND, model_path, use_cuda=use_cuda,
-                                   kokoro_voice=RT.KOKORO_VOICE, kokoro_speed=RT.KOKORO_SPEED)
+            backend = load_backend(
+                RT.TTS_BACKEND,
+                model_path,
+                use_cuda=use_cuda,
+                kokoro_voice=RT.KOKORO_VOICE,
+                kokoro_speed=RT.KOKORO_SPEED,
+            )
         self.backend = backend
         # The Piper voice object, kept for older callers; None when Kokoro is speaking.
         self.voice = getattr(backend, "voice", None)
@@ -205,10 +234,10 @@ class LiveTTSSpeaker:
                 from audio_io import device_name, resolve_device
 
                 device = resolve_device(RT.SPEAKER_DEVICE, "output")
-                print(f"[audio] speaker: {device_name(device, 'output')}")
+                log.info(f"[audio] speaker: {device_name(device, 'output')}")
             player = AudioPlayer(device=device)
         self.player = player
-        self._cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._cache_bytes = 0
         self._cache_lock = threading.Lock()
 
@@ -281,13 +310,15 @@ class LiveTTSSpeaker:
         self._cache_put(text, pcm)
         return pcm
 
-    def prewarm(self, lines: Iterable[str], pause_while=None,
-                stop: threading.Event | None = None) -> threading.Thread:
+    def prewarm(
+        self, lines: Iterable[str], pause_while=None, stop: threading.Event | None = None
+    ) -> threading.Thread:
         """Synthesizes fixed lines into the cache in the background, so the first time the robot
         says them they start instantly too. Sentence by sentence, the way speak() looks them up.
 
         pause_while: a callable; while it returns True (somebody is being served) the prewarm
         waits, so it never takes CPU from a live conversation. stop: abandon it (shutdown)."""
+
         def _run() -> None:
             started, count = time.monotonic(), 0
             for line in lines:
@@ -300,11 +331,13 @@ class LiveTTSSpeaker:
                         return
                     if self._cache_get(sentence) is None:
                         try:
-                            self._cache_put(sentence, np.concatenate(
-                                list(self.backend.synthesize(sentence, 1.0))))
+                            self._cache_put(
+                                sentence,
+                                np.concatenate(list(self.backend.synthesize(sentence, 1.0))),
+                            )
                             count += 1
                         except Exception as exc:  # noqa: BLE001
-                            print(f"[tts] prewarm failed on {sentence!r} ({exc!r})")
+                            log.warning(f"[tts] prewarm failed on {sentence!r} ({exc!r})")
                             return
             rt_log("TTS", f"prewarmed {count} line(s) in {time.monotonic() - started:.1f}s")
 
@@ -315,14 +348,16 @@ class LiveTTSSpeaker:
     # -- playing -----------------------------------------------------------------------------------
     def play_clip(self, pcm: np.ndarray, on_first_audio=None) -> dict:
         """Plays already-rendered audio (blocking), honouring stop_requested."""
-        return self.player.play([pcm], self.sample_rate, stop=self.stop_requested,
-                                on_first_audio=on_first_audio)
+        return self.player.play(
+            [pcm], self.sample_rate, stop=self.stop_requested, on_first_audio=on_first_audio
+        )
 
     def play_clip_async(self, pcm: np.ndarray) -> threading.Thread:
         return self.player.play_async(pcm, self.sample_rate)
 
-    def _play_sentences(self, sentences: Iterable[str],
-                        on_first_audio=None) -> tuple[float | None, int, list[str]]:
+    def _play_sentences(
+        self, sentences: Iterable[str], on_first_audio=None
+    ) -> tuple[float | None, int, list[str]]:
         """Shared playback core for speak() and speak_stream().
 
         A producer thread pulls sentences (for speak_stream that means pulling the LLM's token
@@ -330,7 +365,7 @@ class LiveTTSSpeaker:
         generation, synthesis and playback all overlap, and the next sentence is normally ready
         before the current one has finished playing.
         """
-        work: "queue.Queue[tuple[str, object] | None]" = queue.Queue()
+        work: queue.Queue[tuple[str, object] | None] = queue.Queue()
         failure: list[BaseException] = []
         rate = self._rate()
 
@@ -370,8 +405,9 @@ class LiveTTSSpeaker:
             if on_first_audio is not None:
                 on_first_audio()
 
-        result = self.player.play(_chunks(), self.sample_rate, stop=self.stop_requested,
-                                  on_first_audio=_first_audio)
+        result = self.player.play(
+            _chunks(), self.sample_rate, stop=self.stop_requested, on_first_audio=_first_audio
+        )
         if result["first_audio_ms"] is not None:
             rt_log("TTS", f"first sound after {result['first_audio_ms']:.0f}ms")
         if failure and not self.stop_requested.is_set():
@@ -422,9 +458,7 @@ class LiveTTSSpeaker:
                     continue
                 buffer += piece
                 while True:
-                    sentence, buffer = _pop_sentence(
-                        buffer, final=False, first=(emitted == 0)
-                    )
+                    sentence, buffer = _pop_sentence(buffer, final=False, first=(emitted == 0))
                     if sentence is None:
                         break
                     cleaned = _sanitize_for_speech(sentence)
@@ -480,6 +514,7 @@ class LiveTTSSpeaker:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     print(f"Loading Piper voice '{VOICE_NAME}'...")
     speaker = LiveTTSSpeaker()
 
@@ -489,14 +524,18 @@ if __name__ == "__main__":
         "The Computer Science department office is right there."
     )
 
-    print(f"\nTime-To-First-Audio: {result['time_to_first_audio_ms']:.1f}ms, "
-          f"segments={result['num_segments']}")
+    print(
+        f"\nTime-To-First-Audio: {result['time_to_first_audio_ms']:.1f}ms, "
+        f"segments={result['num_segments']}"
+    )
 
     if result["time_to_first_audio_ms"] <= 2000:
         print("OK: within STAGES.md's <1-2s Time-To-First-Audio target.")
     else:
-        print("WARNING: slower than STAGES.md's <1-2s Time-To-First-Audio target - try a "
-              "smaller/faster voice model (see README.md), or check CPU load.")
+        print(
+            "WARNING: slower than STAGES.md's <1-2s Time-To-First-Audio target - try a "
+            "smaller/faster voice model (see README.md), or check CPU load."
+        )
 
     # --- streaming input (speak_stream) ------------------------------------------------------
     # The same answer, delivered the way a real LLM delivers it: a few characters at a time, with
@@ -507,19 +546,23 @@ if __name__ == "__main__":
     print("\n--- streaming input (simulating a live LLM token stream) ---")
 
     def _fake_token_stream():
-        answer = ("Take the elevator to the 4th floor. "
-                  "Then it's the second door on your right. "
-                  "The Computer Science department office is right there.")
+        answer = (
+            "Take the elevator to the 4th floor. "
+            "Then it's the second door on your right. "
+            "The Computer Science department office is right there."
+        )
         for i in range(0, len(answer), 7):
             time.sleep(0.05)  # stands in for real per-token generation latency
-            yield answer[i:i + 7]
+            yield answer[i : i + 7]
 
     stream_start = time.monotonic()
     stream_result = speaker.speak_stream(_fake_token_stream())
     total_ms = (time.monotonic() - stream_start) * 1000
 
-    print(f"\nTime-To-First-Audio: {stream_result['time_to_first_audio_ms']:.1f}ms, "
-          f"segments={stream_result['num_segments']}, total={total_ms:.0f}ms")
+    print(
+        f"\nTime-To-First-Audio: {stream_result['time_to_first_audio_ms']:.1f}ms, "
+        f"segments={stream_result['num_segments']}, total={total_ms:.0f}ms"
+    )
     print(f"Spoke: {stream_result['text']!r}")
 
     assert stream_result["num_segments"] == 3, stream_result

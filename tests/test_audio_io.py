@@ -49,7 +49,7 @@ def _room(far16: np.ndarray, delay_ms: int, seed: int = 0) -> np.ndarray:
     rir = np.zeros(d + 3200)
     rir[d] = 0.6
     tail = rir.size - d - 1
-    rir[d + 1:] = rng.standard_normal(tail) * np.exp(-np.arange(tail) / 480.0) * 0.05
+    rir[d + 1 :] = rng.standard_normal(tail) * np.exp(-np.arange(tail) / 480.0) * 0.05
     return np.convolve(far16, rir)[: far16.size]
 
 
@@ -61,7 +61,7 @@ def _run(canceller, far_at_voice_rate, voice_rate, mic16, lead_ms=40):
     that hand-over, so it is always larger than the lead, as it is on real hardware.
     """
     tap = canceller.far_tap(voice_rate)
-    q: "queue.Queue[bytes]" = queue.Queue()
+    q: queue.Queue[bytes] = queue.Queue()
     mic = audio_io.MicCapture(q, canceller=canceller)
     out = []
     lead = round(lead_ms * voice_rate / 1000)
@@ -71,8 +71,8 @@ def _run(canceller, far_at_voice_rate, voice_rate, mic16, lead_ms=40):
         j0, j1 = round(i * voice_rate / 16000), round((i + 480) * voice_rate / 16000)
         if i == 0:
             j0 = 0
-        tap(far_at_voice_rate[j0 + (lead if i else 0):j1 + lead])
-        mic._deliver(np.clip(mic16[i:i + 480], -32768, 32767).astype(np.int16).tobytes())
+        tap(far_at_voice_rate[j0 + (lead if i else 0) : j1 + lead])
+        mic._deliver(np.clip(mic16[i : i + 480], -32768, 32767).astype(np.int16).tobytes())
         while not q.empty():
             out.append(np.frombuffer(q.get(), dtype=np.int16))
     return np.concatenate(out).astype(np.float64)
@@ -87,7 +87,7 @@ def test_echo_of_the_robot_voice_is_removed(delay_ms, lead_ms):
     canceller = audio_io.EchoCanceller()
     out = _run(canceller, speech, voice_rate, mic, lead_ms=lead_ms)
     n = min(out.size, mic.size)
-    later = slice(n // 3, n)   # after the canceller has converged
+    later = slice(n // 3, n)  # after the canceller has converged
     erle_db = 10 * np.log10(np.mean(mic[later] ** 2) / (np.mean(out[later] ** 2) + 1e-9))
     assert erle_db > 30, f"only {erle_db:.1f} dB of echo removed"
     assert canceller.far_frames_used > 0
@@ -101,7 +101,7 @@ def test_visitor_voice_survives_after_the_robot_stops():
     far_p[: far.size] = far
     near_p = np.zeros(n)
     start = far.size + 4000
-    near_p[start:start + near.size] = near
+    near_p[start : start + near.size] = near
     mic = _room(far_p, 60) + near_p
     out = _run(audio_io.EchoCanceller(), far_p, 16000, mic)
     seg = slice(start, start + near.size)
@@ -111,14 +111,14 @@ def test_visitor_voice_survives_after_the_robot_stops():
 
 
 def test_without_canceller_frames_pass_through_unchanged():
-    q: "queue.Queue[bytes]" = queue.Queue()
+    q: queue.Queue[bytes] = queue.Queue()
     mic = audio_io.MicCapture(q)
     data = (np.arange(480 * 3 + 100) % 300).astype(np.int16).tobytes()
     mic._deliver(data)
     frames = [q.get_nowait() for _ in range(q.qsize())]
     assert len(frames) == 3 and all(len(f) == 960 for f in frames)
     assert b"".join(frames) == data[: 480 * 3 * 2]
-    mic._deliver(b"\x00" * (960 - 200))     # the 200 leftover bytes complete the next frame
+    mic._deliver(b"\x00" * (960 - 200))  # the 200 leftover bytes complete the next frame
     assert q.qsize() == 1
 
 
@@ -139,12 +139,13 @@ def test_capture_process_pipe(tmp_path):
         "    sys.stdout.buffer.flush(); time.sleep(0.01)\n"
         "time.sleep(5)\n"
     )
-    q: "queue.Queue[bytes]" = queue.Queue()
+    q: queue.Queue[bytes] = queue.Queue()
     mic = audio_io.MicCapture(q, use_process=True)
     mic._capture_command = lambda: [sys.executable, str(fake)]
-    mic._start_in_process = lambda: None      # no sound card here
+    mic._start_in_process = lambda: None  # no sound card here
     mic._running.set()
     import threading
+
     threading.Thread(target=mic._worker, daemon=True).start()
     assert mic._start_process()
     frames = [q.get(timeout=3) for _ in range(60)]
@@ -163,7 +164,7 @@ def _stalling_speaker(seed: int, buffer_s: float = 0.06):
     played = []
     for clip in clips:
         for s in range(0, clip.size, 640):
-            block = clip[s:s + 640]
+            block = clip[s : s + 640]
             ready = t + (rng.uniform(0.1, 0.3) if s == 640 * 30 else 0.0)
             push = max(ready, play_end - buffer_s)
             play = max(push, play_end)
@@ -174,7 +175,7 @@ def _stalling_speaker(seed: int, buffer_s: float = 0.06):
     far = np.zeros(int((play_end + 1.0) * 16000))
     for play, block in played:
         i = int(round(play * 16000))
-        far[i:i + block.size] += block
+        far[i : i + block.size] += block
     return pushes, far
 
 
@@ -187,25 +188,28 @@ def test_echo_stays_cancelled_across_pauses_and_stalls(seed):
     pushes, far = _stalling_speaker(seed)
     mic = _room(far, 60)
     canceller = audio_io.EchoCanceller()
-    q: "queue.Queue[bytes]" = queue.Queue()
+    q: queue.Queue[bytes] = queue.Queue()
     capture = audio_io.MicCapture(q, canceller=canceller)
     events = [(at, 0, "far", block) for at, block in pushes]
-    events += [((s + 1440) / 16000 + rng.uniform(0, 0.06), 1, "mic", s)
-               for s in range(0, mic.size - 1439, 1440)]
+    events += [
+        ((s + 1440) / 16000 + rng.uniform(0, 0.06), 1, "mic", s)
+        for s in range(0, mic.size - 1439, 1440)
+    ]
     out = []
     for at, _order, kind, value in sorted(events, key=lambda e: (e[0], e[1])):
         if kind == "far":
             canceller.push_far(value, at=at)
         else:
-            capture._deliver(np.clip(mic[value:value + 1440], -32768, 32767)
-                             .astype(np.int16).tobytes(), at)
+            capture._deliver(
+                np.clip(mic[value : value + 1440], -32768, 32767).astype(np.int16).tobytes(), at
+            )
             while not q.empty():
                 out.append(np.frombuffer(q.get(), dtype=np.int16))
     out = np.concatenate(out).astype(np.float64)
 
-    def loud_frames(x):   # what barge-in calibration measures: the 95th percentile frame RMS
+    def loud_frames(x):  # what barge-in calibration measures: the 95th percentile frame RMS
         frames = x[: x.size // 480 * 480].reshape(-1, 480)
-        return np.percentile(np.sqrt(np.mean(frames ** 2, axis=1)), 95)
+        return np.percentile(np.sqrt(np.mean(frames**2, axis=1)), 95)
 
     after = slice(3 * 16000, out.size)
     assert loud_frames(out[after]) < loud_frames(mic[after]) / 20, "echo leaked through"

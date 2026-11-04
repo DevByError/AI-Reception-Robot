@@ -1,0 +1,28 @@
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP"]
+ignore = [
+    "E501",  # black handles code; long comments and strings are left as written
+    "B008",
+    "B905",  # zip() without strict=
+    "UP031",
+    "UP006", "UP035",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# Stage modules import each other after adding the stage folders to sys.path.
+"stages/**/*.py" = ["E402"]
+"tests/*.py" = ["E402"]

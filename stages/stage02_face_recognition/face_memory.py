@@ -21,14 +21,17 @@ Python scan over arrays already in RAM. MySQL is the durable record, not the mat
 
 from __future__ import annotations
 
+import logging
+import sys
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Callable
 
+log = logging.getLogger(__name__)
 
-RETENTION_DAYS = 120            # auto-expiry policy (PRIVACY.md): deleted if no visit within
-                                 # this period
+RETENTION_DAYS = 120  # auto-expiry policy (PRIVACY.md): deleted if no visit within
+# this period
 
 # reinforce() runs on every recognition tick - several times a second per visible person - so
 # mirroring each one straight to MySQL would mean a delete-and-reinsert of somebody's whole
@@ -58,8 +61,8 @@ class FaceRecord:
     person_id: str
     name: str
     embeddings: list  # multiple samples per person (list[float] for the mock, list[np.ndarray]
-                       # for real SFace) - matching against several samples taken at different
-                       # angles/lighting is far more robust than a single frozen snapshot
+    # for real SFace) - matching against several samples taken at different
+    # angles/lighting is far more robust than a single frozen snapshot
     consent_given: bool
     first_seen: float
     last_seen: float
@@ -106,9 +109,13 @@ class FaceMemoryStore:
     stating plainly: a failed write means that change is only in memory and will be lost on
     exit, which is why the warning is printed rather than swallowed."""
 
-    def __init__(self, is_match: Callable[[object, object], bool] = default_is_match, db=None,
-                 score: Callable[[object, object], float] | None = None,
-                 ambiguity_margin: float = MATCH_AMBIGUITY_MARGIN):
+    def __init__(
+        self,
+        is_match: Callable[[object, object], bool] = default_is_match,
+        db=None,
+        score: Callable[[object, object], float] | None = None,
+        ambiguity_margin: float = MATCH_AMBIGUITY_MARGIN,
+    ):
         self._records: dict[str, FaceRecord] = {}
         self.is_match = is_match
         # Optional similarity function (SFaceEmbedder.similarity). With it, find_match() picks
@@ -147,8 +154,10 @@ class FaceMemoryStore:
         try:
             write()
         except Exception as exc:
-            print(f"[db] could not persist {description} ({exc!r}) - kept in memory only for "
-                  f"this session.")
+            log.warning(
+                f"[db] could not persist {description} ({exc!r}) - kept in memory only for "
+                f"this session."
+            )
 
     def get(self, person_id: str) -> FaceRecord | None:
         """Looks somebody up by id when the caller already knows who they are - the recognition
@@ -200,17 +209,19 @@ class FaceMemoryStore:
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
         best_score, best_rec = scored[0]
-        if not self.is_match(embedding, max(
-            best_rec.embeddings, key=lambda s: self.score(embedding, s)
-        )):
+        if not self.is_match(
+            embedding, max(best_rec.embeddings, key=lambda s: self.score(embedding, s))
+        ):
             return None  # nobody clears the threshold at all
 
         if len(scored) > 1:
             runner_up = scored[1][0]
             if best_score - runner_up < self.ambiguity_margin:
-                print(f"[face] ambiguous match: {best_rec.name} {best_score:.3f} vs "
-                      f"{scored[1][1].name} {runner_up:.3f} (need a {self.ambiguity_margin:.2f} "
-                      f"gap) - treating as unknown rather than guessing.")
+                log.info(
+                    f"[face] ambiguous match: {best_rec.name} {best_score:.3f} vs "
+                    f"{scored[1][1].name} {runner_up:.3f} (need a {self.ambiguity_margin:.2f} "
+                    f"gap) - treating as unknown rather than guessing."
+                )
                 return None
 
         return best_rec
@@ -223,8 +234,9 @@ class FaceMemoryStore:
         than a single frozen snapshot, or the very first re-recognition attempt at a slightly
         different angle will fail with nothing else to compare against."""
         if not consent_given:
-            raise PermissionError("Cannot register a face without explicit consent - see "
-                                   "PRIVACY.md")
+            raise PermissionError(
+                "Cannot register a face without explicit consent - see " "PRIVACY.md"
+            )
         if not embeddings:
             raise ValueError("register() needs at least one embedding")
         now = time.time()
@@ -241,9 +253,13 @@ class FaceMemoryStore:
         self._mirror(
             f"the new record for {name!r}",
             lambda: self.db.insert_person(
-                person_id=rec.person_id, name=rec.name, consent_given=True,
-                first_seen=rec.first_seen, last_seen=rec.last_seen,
-                visit_count=rec.visit_count, embeddings=rec.embeddings,
+                person_id=rec.person_id,
+                name=rec.name,
+                consent_given=True,
+                first_seen=rec.first_seen,
+                last_seen=rec.last_seen,
+                visit_count=rec.visit_count,
+                embeddings=rec.embeddings,
             ),
         )
         return rec
@@ -299,7 +315,8 @@ class FaceMemoryStore:
         actually looked at them."""
         now = now or time.time()
         expired = [
-            pid for pid, rec in self._records.items()
+            pid
+            for pid, rec in self._records.items()
             if (now - rec.last_seen) > RETENTION_DAYS * 86400
         ]
         for pid in expired:
@@ -348,6 +365,7 @@ class FaceRecognitionFlow:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     store = FaceMemoryStore()
     flow = FaceRecognitionFlow(store)
 
@@ -363,8 +381,10 @@ if __name__ == "__main__":
     print(f"First visit (new face): status={status1}, name={rec1.name if rec1 else None}")
 
     status2, rec2 = flow.handle_face(face_crop=42, ask_consent_and_name=consent_yes)
-    print(f"Second visit (same face): status={status2}, "
-          f"visit_count={rec2.visit_count if rec2 else None}")
+    print(
+        f"Second visit (same face): status={status2}, "
+        f"visit_count={rec2.visit_count if rec2 else None}"
+    )
 
     status3, rec3 = flow.handle_face(face_crop=99, ask_consent_and_name=consent_no)
     print(f"Third face declined consent: status={status3}, record={rec3}")
@@ -411,11 +431,19 @@ if __name__ == "__main__":
 
     # 1. a store handed existing rows comes up already knowing those people
     now = time.time()
-    preloaded = _FakeDB(people=[{
-        "person_id": "abc-123", "name": "Sara", "consent_given": True,
-        "first_seen": now, "last_seen": now, "visit_count": 7,
-        "embeddings": [fake_embedding(7)],
-    }])
+    preloaded = _FakeDB(
+        people=[
+            {
+                "person_id": "abc-123",
+                "name": "Sara",
+                "consent_given": True,
+                "first_seen": now,
+                "last_seen": now,
+                "visit_count": 7,
+                "embeddings": [fake_embedding(7)],
+            }
+        ]
+    )
     restored = FaceMemoryStore(db=preloaded)
     assert len(restored) == 1
     match = restored.find_match(fake_embedding(7))
@@ -435,26 +463,31 @@ if __name__ == "__main__":
     db = _FakeDB()
     store = FaceMemoryStore(db=db)
     rec = store.register(name="Ahmad", embeddings=[fake_embedding(1)], consent_given=True)
-    for i in range(20):
+    for _i in range(20):
         store.reinforce(rec, fake_embedding(1))
     assert db.calls == ["insert:Ahmad"], f"reinforce() wrote to the database: {db.calls}"
     store._last_persist[rec.person_id] = 0.0  # pretend the interval has elapsed
     store.reinforce(rec, fake_embedding(1))
     assert db.calls[-1].startswith("replace_embeddings:"), db.calls
     assert len(rec.embeddings) == MAX_EMBEDDINGS_PER_PERSON
-    print(f"  [OK] 20 reinforcements wrote nothing; the next one after the interval wrote "
-          f"once: {db.calls}")
+    print(
+        f"  [OK] 20 reinforcements wrote nothing; the next one after the interval wrote "
+        f"once: {db.calls}"
+    )
 
     # 4. a database outage must not stop the robot recognizing people
     failing = _FakeDB(fail=True)
     store = FaceMemoryStore(db=failing)
     rec = store.register(name="Ahmad", embeddings=[fake_embedding(1)], consent_given=True)
-    assert store.find_match(fake_embedding(1)) is not None, \
-        "a failed database write lost the person from memory too"
+    assert (
+        store.find_match(fake_embedding(1)) is not None
+    ), "a failed database write lost the person from memory too"
     print("  [OK] a failing database warns but keeps working in memory (see the line above)")
 
-    print("\nOK: persistence mirroring behaves correctly (loading, write-through, throttling, "
-          "and degrading safely when the database is down).")
+    print(
+        "\nOK: persistence mirroring behaves correctly (loading, write-through, throttling, "
+        "and degrading safely when the database is down)."
+    )
 
     # --- best match, not first match -----------------------------------------
     # The bug this replaces: find_match() walked the records in insertion order and returned
@@ -477,8 +510,10 @@ if __name__ == "__main__":
     late = store.register("Sara", [[0.99, 0.0, 0.0]], consent_given=True)
 
     probe = [1.0, 0.0, 0.0]
-    print(f"  probe scores: Ahmad={cosine_like(probe, early.embeddings[0]):.2f}, "
-          f"Sara={cosine_like(probe, late.embeddings[0]):.2f}")
+    print(
+        f"  probe scores: Ahmad={cosine_like(probe, early.embeddings[0]):.2f}, "
+        f"Sara={cosine_like(probe, late.embeddings[0]):.2f}"
+    )
     best = store.find_match(probe)
     print(f"  find_match -> {best.name if best else None}")
     assert best is not None and best.name == "Sara", (
@@ -516,5 +551,7 @@ if __name__ == "__main__":
     assert legacy.find_match(probe).name == "First"
 
     print("  [OK] best match wins, ambiguous pairs return nobody, legacy callers unchanged")
-    print("\nOK: recognition picks the best candidate rather than the first, and refuses to "
-          "choose between two people it cannot actually tell apart.")
+    print(
+        "\nOK: recognition picks the best candidate rather than the first, and refuses to "
+        "choose between two people it cannot actually tell apart."
+    )

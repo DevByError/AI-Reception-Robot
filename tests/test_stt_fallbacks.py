@@ -31,8 +31,9 @@ class _Model:
 def fake_whisper(monkeypatch):
     _Model.made = []
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=_Model))
-    monkeypatch.setitem(sys.modules, "ctranslate2",
-                        types.SimpleNamespace(get_cuda_device_count=lambda: 1))
+    monkeypatch.setitem(
+        sys.modules, "ctranslate2", types.SimpleNamespace(get_cuda_device_count=lambda: 1)
+    )
     monkeypatch.setattr(stt, "_add_nvidia_dll_dirs", lambda: None)
     return _Model
 
@@ -61,19 +62,22 @@ def test_gpu_failing_mid_conversation_moves_whisper_to_the_cpu(fake_whisper, cap
     on the CPU, and the GPU is not tried again."""
     engine = stt.WhisperSTTEngine.__new__(stt.WhisperSTTEngine)
     fake_whisper.fail_cuda = True
-    engine.model, engine.device, engine.model_size = _Model("small.en", "cuda", "float16"), \
-        "cuda", "small.en"
+    engine.model, engine.device, engine.model_size = (
+        _Model("small.en", "cuda", "float16"),
+        "cuda",
+        "small.en",
+    )
     engine.initial_prompt = engine.hotwords = None
     engine.vocabulary, engine.denoise_enabled = [], False
     speech = (np.sin(np.arange(16000) / 5.0) * 8000).astype(np.int16).tobytes()
 
     chunks = engine.transcribe_stream([speech], "en-US")
 
-    assert chunks[0].text == ""                      # the stand-in model hears no words
+    assert chunks[0].text == ""  # the stand-in model hears no words
     assert engine.device == "cpu"
     assert fake_whisper.made[-1] == ("cpu", "int8")
     assert "moving it to the CPU" in capsys.readouterr().out
-    engine.transcribe_stream([speech], "en-US")      # stays on the CPU, no new model
+    engine.transcribe_stream([speech], "en-US")  # stays on the CPU, no new model
     assert fake_whisper.made.count(("cpu", "int8")) == 1
 
 

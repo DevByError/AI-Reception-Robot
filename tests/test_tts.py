@@ -16,10 +16,9 @@ audio_player = pytest.importorskip("audio_player")
 
 
 class FakeStream:
-    instances: list["FakeStream"] = []
+    instances: list[FakeStream] = []
 
-    def __init__(self, samplerate, channels, dtype, device=None, blocksize=0, callback=None,
-                 **_):
+    def __init__(self, samplerate, channels, dtype, device=None, blocksize=0, callback=None, **_):
         self.samplerate = samplerate
         self.device = device
         self.written = bytearray()
@@ -31,7 +30,7 @@ class FakeStream:
         FakeStream.instances.append(self)
 
     def start(self):
-        if self.callback is not None:   # the always-running stream: pulls at 4x speed
+        if self.callback is not None:  # the always-running stream: pulls at 4x speed
             self._running.set()
 
             def _run():
@@ -45,7 +44,7 @@ class FakeStream:
 
     def write(self, data):
         self.written += data
-        time.sleep(len(data) / 2 / self.samplerate * 0.25)   # plays at 4x speed
+        time.sleep(len(data) / 2 / self.samplerate * 0.25)  # plays at 4x speed
 
     def stop(self):
         self._running.clear()
@@ -60,6 +59,7 @@ class FakeStream:
 
 class SlowBackend:
     """Takes 0.1s per sentence; 0.4s of a 440Hz tone per sentence."""
+
     name = "fake"
     sample_rate = 16000
     voice = None
@@ -103,7 +103,7 @@ def test_second_time_comes_from_the_cache(speaker, monkeypatch):
     speaker.speak("Welcome to Lincoln University College.")
     n = len(speaker.backend.calls)
     result = speaker.speak("Welcome to Lincoln University College.")
-    assert len(speaker.backend.calls) == n          # not synthesized again
+    assert len(speaker.backend.calls) == n  # not synthesized again
     assert result["time_to_first_audio_ms"] < 50
 
 
@@ -136,17 +136,18 @@ def test_every_block_goes_to_the_echo_reference(monkeypatch):
     monkeypatch.setattr(sd, "RawOutputStream", FakeStream)
     seen = []
     player = audio_player.AudioPlayer(
-        far_tap_factory=lambda rate: (lambda pcm: seen.append(pcm.copy())))
+        far_tap_factory=lambda rate: (lambda pcm: seen.append(pcm.copy()))
+    )
     assert player.continuous
     speaker = tts_live.LiveTTSSpeaker(backend=SlowBackend(), player=player)
     speaker.speak("Short line.")
     speaker.speak("Another line.")
     player.close()
-    assert len(FakeStream.instances) == 1                 # one stream for both sentences
+    assert len(FakeStream.instances) == 1  # one stream for both sentences
     tapped = np.concatenate(seen)
     played = np.frombuffer(bytes(FakeStream.instances[0].written), dtype=np.int16)
     n = min(tapped.size, played.size)
-    assert n and np.array_equal(tapped[:n], played[:n])   # exactly what was played
+    assert n and np.array_equal(tapped[:n], played[:n])  # exactly what was played
     assert np.count_nonzero(tapped) >= 2 * int(0.4 * 16000) * 0.9
     assert max(len(x) for x in seen) <= int(16000 * audio_player.BLOCK_MS / 1000)
 
@@ -189,7 +190,7 @@ def test_render_and_prewarm(speaker, monkeypatch):
     monkeypatch.setattr(tts_live.RT, "TTS_AUDIO_CACHE", True)
     speaker.prewarm(["Hello! Welcome.", "Sorry, I didn't catch that."]).join(timeout=5)
     n = len(speaker.backend.calls)
-    assert n == 3          # "Hello!", "Welcome.", "Sorry, ..." - one per sentence
+    assert n == 3  # "Hello!", "Welcome.", "Sorry, ..." - one per sentence
     pcm = speaker.render("Welcome.")
     assert pcm.size and len(speaker.backend.calls) == n
 
@@ -209,6 +210,7 @@ def test_kokoro_voice_if_installed():
 
 class _TimedKokoro:
     """A Kokoro stand-in whose speed test returns the given real-time factors in turn."""
+
     name = "kokoro"
 
     def __init__(self, rtfs):
@@ -220,12 +222,15 @@ class _TimedKokoro:
         return self.rtfs.pop(0)
 
 
-@pytest.mark.parametrize("rtfs, chosen, calls", [
-    ([0.40], "kokoro", 1),              # fast enough first time: measured once
-    ([0.62, 0.55, 0.45], "kokoro", 3),  # a near miss during a busy startup, then it passes
-    ([0.62, 0.70, 0.60], "piper", 3),   # a near miss three times: really too slow
-    ([1.20], "piper", 1),               # clearly too slow: not measured again
-])
+@pytest.mark.parametrize(
+    "rtfs, chosen, calls",
+    [
+        ([0.40], "kokoro", 1),  # fast enough first time: measured once
+        ([0.62, 0.55, 0.45], "kokoro", 3),  # a near miss during a busy startup, then it passes
+        ([0.62, 0.70, 0.60], "piper", 3),  # a near miss three times: really too slow
+        ([1.20], "piper", 1),  # clearly too slow: not measured again
+    ],
+)
 def test_kokoro_speed_test_retries_only_a_near_miss(monkeypatch, rtfs, chosen, calls):
     vb = pytest.importorskip("voice_backends")
     kokoro = _TimedKokoro(rtfs)

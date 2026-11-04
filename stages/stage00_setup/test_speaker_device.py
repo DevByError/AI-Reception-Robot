@@ -19,12 +19,16 @@ t = np.linspace(0, duration_s, int(fs * duration_s), endpoint=False)
 tone = 0.5 * np.sin(2 * np.pi * 440 * t)  # louder (0.5) and longer (2s) than the Stage 00 check
 
 if device_index is not None:
-    print(f"Playing 2s test tone on device index {device_index} "
-          f"({sd.query_devices(device_index)['name']})...")
+    print(
+        f"Playing 2s test tone on device index {device_index} "
+        f"({sd.query_devices(device_index)['name']})..."
+    )
 else:
     default_out = sd.default.device[1]
-    print(f"Playing 2s test tone on the DEFAULT output device "
-          f"({sd.query_devices(default_out)['name']})...")
+    print(
+        f"Playing 2s test tone on the DEFAULT output device "
+        f"({sd.query_devices(default_out)['name']})..."
+    )
 
 sd.play(tone, fs, device=device_index)
 sd.wait()

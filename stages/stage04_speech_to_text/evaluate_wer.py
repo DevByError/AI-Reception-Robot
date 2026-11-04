@@ -44,10 +44,11 @@ import wave
 from collections import defaultdict
 from pathlib import Path
 
-import numpy as np
-
 from stt_listener_live import (
-    WhisperSTTEngine, real_hotwords, real_initial_prompt, real_vocabulary,
+    WhisperSTTEngine,
+    real_hotwords,
+    real_initial_prompt,
+    real_vocabulary,
 )
 
 SAMPLES_DIR = Path(__file__).resolve().parent / "test_samples"
@@ -78,14 +79,16 @@ def main() -> None:
     # before comparing - otherwise this measures transcription formatting, not accuracy. (Digit
     # vs. word-form numbers, e.g. Whisper writing "4th" as "fourth", aren't covered by this - see
     # this file's docstring: write `expected` the way it's actually meant to sound.)
-    normalize = jiwer.Compose([
-        jiwer.ToLowerCase(),
-        jiwer.RemovePunctuation(),
-        jiwer.RemoveMultipleSpaces(),
-        jiwer.Strip(),
-        jiwer.RemoveEmptyStrings(),
-        jiwer.ReduceToListOfListOfWords(),
-    ])
+    normalize = jiwer.Compose(
+        [
+            jiwer.ToLowerCase(),
+            jiwer.RemovePunctuation(),
+            jiwer.RemoveMultipleSpaces(),
+            jiwer.Strip(),
+            jiwer.RemoveEmptyStrings(),
+            jiwer.ReduceToListOfListOfWords(),
+        ]
+    )
 
     if not MANIFEST_PATH.exists():
         print(f"No manifest found at {MANIFEST_PATH} - see this file's docstring to set one up.")
@@ -101,7 +104,8 @@ def main() -> None:
     # the initial prompt/vocabulary are actually helping (re-run with WhisperSTTEngine()
     # bare, no args, to A/B against the unbiased baseline if you want to confirm that directly).
     engine = WhisperSTTEngine(
-        initial_prompt=real_initial_prompt(), vocabulary=real_vocabulary(),
+        initial_prompt=real_initial_prompt(),
+        vocabulary=real_vocabulary(),
         hotwords=real_hotwords(),
     )
 
@@ -121,9 +125,11 @@ def main() -> None:
         category = meta.get("category", "uncategorized")
 
         sample_wer = (
-            jiwer.wer(expected, hypothesis, reference_transform=normalize,
-                      hypothesis_transform=normalize)
-            if expected.strip() else float("nan")
+            jiwer.wer(
+                expected, hypothesis, reference_transform=normalize, hypothesis_transform=normalize
+            )
+            if expected.strip()
+            else float("nan")
         )
         rows.append((filename, category, expected, hypothesis, sample_wer))
         by_category[category].append(sample_wer)
@@ -135,8 +141,9 @@ def main() -> None:
     print(f"\n{'file':<20} {'category':<12} {'WER':>6}  expected / got")
     print("-" * 90)
     for filename, category, expected, hypothesis, sample_wer in rows:
-        print(f"{filename:<20} {category:<12} {sample_wer:>5.1%}  "
-              f"{expected!r} / {hypothesis!r}")
+        print(
+            f"{filename:<20} {category:<12} {sample_wer:>5.1%}  " f"{expected!r} / {hypothesis!r}"
+        )
 
     print(f"\n{'category':<12} {'avg WER':>8}  {'n':>4}")
     print("-" * 30)
