@@ -1,129 +1,294 @@
-  # University AI Reception Robot
+# AI-Reception-Robot
 
-A stationary (non-mobile) robot that sees students, proactively greets them by voice, listens to
-their questions, understands them, and replies fully by voice (no info screen, no text — 100%
-voice interaction). It recognizes returning students (with their consent) and tells them which
-floor a department or service is on (floor-only — no step-by-step directions; a floor number is
-enough). University data (departments, staff, events...) is pulled automatically and periodically
-from the university's public website, with no manual intervention.
+![Python 3.10](https://img.shields.io/badge/python-3.10-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-## The concept
+A stationary reception robot for a university front desk. It notices people who stop in front of
+it, greets them by voice, listens to their questions and answers by voice. It can remember
+returning visitors (only with their consent) and answers from content scraped from the
+university's public website.
 
-- **Hardware**: a fixed point (camera + microphone + speaker + Mini PC/Jetson), no locomotion.
-  The interface is either an animated robot face on a small screen or a physical animatronic
-  head — that decision isn't final yet, so the "expression/face" layer is designed as a
-  swappable module (one interface, two possible implementations).
-- **No info screen, no visual maps**: every answer and every direction must be fully spoken and
-  clear verbally.
-- **Language**: we start with **English only** (STT/NLU/TTS). Arabic and Chinese come later —
-  the language layer is designed to be extensible (no rebuild needed to add a language).
-- **Location answers**: floor-only (e.g. "the Engineering department is on the third floor") —
-  no step-by-step turn-by-turn directions and no separate wayfinding stage; a floor number is
-  enough to save the student time.
-- **Multiple people**: if more than one student approaches at once, greet everyone as one group
-  ("Hi everyone...").
-- **Remembering names**: the first time it sees a new face, it asks the student directly and
-  requests explicit consent before storing their name + face embedding.
-- **Remembering across restarts**: names, face embeddings and full conversation transcripts
-  (with timestamps) are stored in MySQL, so closing and reopening the robot doesn't make it
-  forget anyone. Setup is one file to copy and one command — see "Set up the database" in
-  `stages/stage02_face_recognition/README.md`, and `docs/PRIVACY.md` for what's stored and how
-  a deletion request is handled.
-- **Unanswerable questions**: if outside the knowledge base, it apologizes, suggests the official
-  website as an alternative source, and mentions the nearest human front-desk office.
-- **Never dependent on one API**: answers come from a fallback chain — a cloud LLM (Gemini) when
-  it's working, a free local model running on the robot itself (Ollama) when it isn't, and the
-  knowledge base's own text if neither is available. A cloud outage costs a retry instead of a
-  wrong answer. See `stages/stage05_nlu_dialogue/README.md` ("Local LLM via Ollama").
-- **Build approach**: built in sequential stages, each stage built and tested independently
-  before moving to the next.
-- **Data source**: periodic web scraping of the public university website (no API exists yet) +
-  a local database for faces/internal maps.
+## Overview
 
-## Where to start
+The robot is a fixed point at a reception desk: a camera, a microphone, a speaker and a computer,
+with an optional screen that shows an animated face. Every interaction is spoken. There is no
+information screen and no map, so location answers are kept to the floor ("The Engineering
+department is on the third floor").
 
-Read the files in this order:
+The project is built as ten stages (`stages/stage00_setup` to `stages/stage09_deployment`). Each
+stage has a self-test with mock data, so most of it can be developed and tested without hardware.
+`stages/stage08_orchestrator/main_live.py` wires the stages together into the running robot.
 
-1. `docs/ARCHITECTURE.md` — the full picture of the system workflow and the data workflow.
-2. `docs/STAGES.md` — the detailed build plan across 10 stages (0 → 9), each with a goal and a
-   test.
-3. `docs/PRIVACY.md` — the policy for handling face data and privacy (legally and ethically
-   important).
-4. The `stages/` folder — a runnable code skeleton for each stage, ordered `stage00_...` through
-   `stage09_...`.
+English is the only supported language for now. The language is passed through every layer so
+others can be added later.
 
-## Installing and running
+## Features
 
-Full step-by-step instructions — from creating the virtual environment through downloading the
-models, setting up the database, and launching the robot — are in **[INSTALL.md](INSTALL.md)**.
+- Greets people who stop and look at the robot, not people walking past. Groups get one greeting.
+- Face recognition with YuNet and SFace. A new visitor is asked before their name and face
+  embedding are stored.
+- Persistent memory in MySQL (or a local SQLite file if MySQL is not available): enrolled people,
+  conversation transcripts and short notes from earlier visits.
+- Speech-to-text with faster-whisper on CPU or NVIDIA GPU, an optional streaming Zipformer
+  recognizer, and optional Groq Whisper large-v3 for finished questions.
+- End-of-turn detection (smart-turn model) so the robot answers soon after a finished question
+  and waits through pauses.
+- Barge-in: WebRTC echo cancellation removes the robot's own voice from the microphone, so a
+  visitor can interrupt it.
+- Answers from a fallback chain: cloud LLM (Groq or Gemini), then a local LLM through Ollama,
+  then the retrieved knowledge-base text spoken directly.
+- Retrieval over scraped website content using MiniLM sentence embeddings (ONNX, no PyTorch
+  needed), cached on disk and refreshed in the background.
+- Text-to-speech with Kokoro, falling back to Piper, spoken sentence by sentence as the answer is
+  generated.
+- Privacy controls: consent before enrolment, automatic deletion after a retention period, and
+  deletion on request. See [docs/PRIVACY.md](docs/PRIVACY.md).
 
-The short version, on a fresh clone:
+## Hardware
 
-```powershell
-# Windows
-.\stages\stage00_setup\setup.ps1        # creates .venv and installs the base packages
-.\.venv\Scripts\Activate.ps1            # activate - needed in EVERY new terminal
-pip install -r requirements.txt          # every stage's dependencies (requirements-lite.txt: no PyTorch)
-python stages\stage00_setup\download_models.py   # voice, speech recognizer, turn model, wake word
-python stages\stage08_orchestrator\main_live.py
+| Component | Model | Purpose |
+|---|---|---|
+| Main computer | Windows laptop for development; NVIDIA Jetson planned for deployment (model TBD) | Runs every stage |
+| GPU (optional) | NVIDIA GTX 1650 4 GB (development laptop) | Runs Whisper with CUDA; everything else runs on the CPU |
+| Camera | USB webcam (model TBD), device index 0, captured at 1280x720 | Presence detection, face recognition, lip movement |
+| Microphone | Realtek microphone array (development laptop); USB microphone or array for deployment (model TBD) | Speech input; select with `MIC_DEVICE` |
+| Speaker | TBD | Speech output; select with `SPEAKER_DEVICE` |
+| Display | Small screen (model TBD), optional | Animated face (`FACE_DISPLAY`, `FACE_FULLSCREEN`); use `HEADLESS=true` without one |
+| Animatronic head | Planned | Alternative to the on-screen face; not supported in code yet |
+| Enclosure, power, other sensors | TBD | Not part of the software yet |
+
+Minimum and recommended specs:
+
+| | CPU-only mode | GPU mode |
+|---|---|---|
+| Install | `requirements-lite.txt` | `requirements.txt` or `-lite`, plus `requirements-gpu.txt` |
+| CPU | 4-core x86-64 (the measurements in [docs/RESULTS.md](docs/RESULTS.md) use one) | 4 cores or more |
+| GPU | None; Whisper runs on the CPU, or use `STT_BACKEND=sherpa` / `STT_CLOUD=groq` | NVIDIA GPU with CUDA 12 support and 4 GB VRAM or more |
+| RAM | 8 GB suggested (not measured) | 16 GB suggested (not measured) |
+| Disk | About 3 GB | About 6 GB |
+
+## Software requirements
+
+- Python 3.10 (3.11 and 3.12 should work; 3.13 is not supported because `mediapipe==0.10.18` has
+  no wheel for it)
+- Windows 10/11 or Linux (including Jetson). macOS is untested.
+- Optional: MySQL Server 8.x for persistent memory
+- Optional: [Ollama](https://ollama.com) with `llama3.2:3b` as the offline language model
+- Optional: a Groq or Gemini API key for the cloud language model
+
+## Architecture
+
+```
+camera -> face detection / recognition -> speech-to-text -> language model -> text-to-speech -> speaker
 ```
 
+In more detail:
+
+1. The camera loop finds faces (YuNet), recognizes known people (SFace) and checks whether
+   someone has stopped and is facing the robot.
+2. The robot greets the visitor and listens. Echo cancellation and a voice-activity gate clean
+   the microphone signal; an end-of-turn model decides when the question is finished.
+3. Whisper (local or Groq) turns the question into text.
+4. The dialogue manager answers identity questions directly, otherwise searches the knowledge
+   base and asks the language model chain for a grounded answer.
+5. The answer is spoken sentence by sentence with Kokoro or Piper.
+
+A background task re-scrapes the university website, re-embeds changed pages and swaps in the new
+knowledge base without interrupting a conversation. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+for the full flow.
+
+## Installation
+
+The short version is below. [docs/SETUP.md](docs/SETUP.md) has every step in detail, including
+the database and Ollama.
+
 ```bash
-# Linux/macOS/Jetson
-bash stages/stage00_setup/setup.sh
-source .venv/bin/activate
-pip install -r requirements.txt
+git clone https://github.com/DevByError/AI-Reception-Robot.git
+cd AI-Reception-Robot
+
+# Create and activate the virtual environment
+python -m venv .venv
+source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+
+# Install the dependencies (pick one)
+pip install -r requirements-lite.txt   # recommended: no PyTorch
+pip install -r requirements.txt        # everything, including PyTorch-based fallbacks
+
+# Optional: Whisper on an NVIDIA GPU
+pip install -r requirements-gpu.txt
+
+# Download the model weights (not stored in git)
 python stages/stage00_setup/download_models.py
+cd stages/stage02_face_recognition && python download_models.py && cd ../..
+cd stages/stage06_text_to_speech && python -m piper.download_voices en_US-amy-medium && cd ../..
+
+# Create your settings file
+cp .env.example .env               # Windows: copy .env.example .env
+```
+
+The requirement files:
+
+| File | Purpose |
+|---|---|
+| `requirements-lite.txt` | Everything the robot uses by default, without PyTorch. Use this on most machines. |
+| `requirements.txt` | The lite set plus PyTorch-based fallbacks: YOLO person detection, sentence-transformers, speaker diarization and the Stage 03 placeholder voice. |
+| `requirements-gpu.txt` | NVIDIA cuBLAS and cuDNN for Whisper on the GPU. Install on top of one of the above. |
+| `requirements-dev.txt` | pytest, black and ruff. |
+| `stages/*/requirements.txt` | Per-stage subsets, with notes on why each version is pinned. |
+
+Model weights are downloaded, never committed. `download_models.py` fetches Kokoro, the streaming
+Zipformer recognizer, the smart-turn model, the MiniLM ONNX embeddings and the openWakeWord models
+into `models/` (about 370 MB, with checksums). The face models go into
+`stages/stage02_face_recognition/` and the Piper fallback voice into
+`stages/stage06_text_to_speech/`. Whisper and YOLOv8n download themselves on first use.
+
+## Configuration
+
+All settings are read from environment variables or from a `.env` file in the project root. A
+real environment variable always takes precedence over `.env`. Every setting is listed with its
+default in [.env.example](.env.example).
+
+The ones most people change:
+
+| Variable | Purpose |
+|---|---|
+| `LUC_DB_HOST`, `LUC_DB_USER`, `LUC_DB_PASSWORD`, `LUC_DB_NAME` | MySQL connection for persistent memory |
+| `LUC_DB_BACKEND` | `auto` (MySQL, else SQLite), `mysql` or `sqlite` |
+| `GROQ_API_KEY`, `GEMINI_API_KEY` | Optional cloud language models |
+| `ANSWER_BACKENDS` | Order of the answer chain, default `groq,gemini,ollama` |
+| `STT_DEVICE`, `WHISPER_MODEL` | Whisper on `auto`, `cuda` or `cpu`, and the model size |
+| `STT_CLOUD` | `groq` to transcribe finished questions with Groq Whisper |
+| `MIC_DEVICE`, `SPEAKER_DEVICE` | Part of the audio device name to use |
+| `HEADLESS`, `FACE_DISPLAY`, `FACE_FULLSCREEN` | Screen behaviour |
+
+Run `python stages/stage00_setup/realtime_config.py` to print every setting and where its value
+came from. `python stages/stage00_setup/project_env.py` shows which credentials are set without
+printing them.
+
+The robot's name and creator details are stored in the `robot_identity` table and can be changed
+with `python stages/stage05_nlu_dialogue/identity.py --set robot_name=Nova`.
+
+## Usage
+
+Start the robot:
+
+```bash
 python stages/stage08_orchestrator/main_live.py
 ```
 
-The model weights, the `.env` credentials file and the knowledge-base cache are all gitignored
-and are **not** in a fresh clone — INSTALL.md steps 4 to 6 fetch each of them with a single
-command.
+The first launch scrapes the university website and builds the knowledge base, which takes a few
+minutes. The result is cached for 24 hours. Use `--refresh` to force a new scrape.
 
-## Trying out any stage
+Stand in front of the camera and look at it; the robot greets you. Ask a question out loud. You
+can talk over the robot to interrupt it. Say "no, that's all" to end the visit.
 
-Each stage is at least one Python file with mock data built into its self-test at the bottom, so
-you can run it and confirm the logic works even before the real hardware is connected (activate
-the venv at the start of every new terminal session):
+Check the hardware:
 
 ```bash
-python stages/stage01_presence_detection/presence_detector.py
+python stages/stage00_setup/test_hardware.py
+python stages/stage00_setup/list_audio_devices.py
 ```
 
-The `*_live.py` file beside it is that same stage against real hardware.
+Run the tests:
 
-## How it holds a conversation
-
-- **Who to talk to**: it greets people who stop near it and look at it for a second, not
-  passers-by. It answers the person facing it whose lips are moving, or anyone who says its
-  name, and ignores side conversations and voices from off camera.
-- **When to talk**: a small end-of-turn model hears whether you have finished ("...the
-  library?") or are only pausing ("I wanted to ask about, um..."). It answers about a quarter
-  of a second after a finished question and waits through pauses, sometimes with a quiet "mm-hm".
-- **Being interrupted**: echo cancellation removes its own voice from the microphone, so you can
-  talk over it; it stops and answers what you said instead.
-- **Speed**: answers are spoken sentence by sentence as they are generated. If an answer is slow,
-  it says "mm, okay" after 0.7 s instead of leaving a silence.
-- **Voice and face**: Kokoro, a natural-sounding voice, and an animated face on screen that looks
-  at the visitor and moves its mouth with the speech.
-- **Cheap hardware**: everything runs on a CPU, and `requirements-lite.txt` needs no PyTorch.
-  Measured numbers are in `docs/RESULTS.md`.
-
-## Short runtime flow
-
-```
-IDLE → person/group approaches (camera) → proactive group greeting (TTS)
-     → face recognition (known: personalize greeting / new: ask for name with consent)
-     → listening (STT) → intent understanding + knowledge search (RAG)
-        → [found in knowledge base]   → grounded answer (department/service location is
-                                         floor-only - "the X department is on the Yth floor" -
-                                         no step-by-step directions, no screen/map)
-        → [general conversation]      → open answer, not grounded (any topic)
-        → [outside knowledge base]    → apology + alternative source + human referral
-     → speak the answer (TTS) → back to listening or IDLE after a timeout
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -m "not e2e"     # about a minute, no hardware needed
+python -m pytest                  # includes two simulated end-to-end visits
 ```
 
-Separately, there is an independent background flow: a periodic scheduler re-crawls the
-university's public website, detects changes, and automatically updates the robot's knowledge
-base — no manual work required.
+Tests that need a model file or `tests/data/face.jpg` skip themselves when it is missing.
+
+To start the robot automatically, see [stages/stage09_deployment/README.md](stages/stage09_deployment/README.md)
+(`start_robot.bat` on Windows, a systemd user service on Linux).
+
+## Project structure
+
+```
+AI-Reception-Robot/
+  docs/                         Architecture, setup guide, privacy policy, measurements
+  stages/
+    stage00_setup/              Environment, settings, model downloader, hardware checks
+    stage01_presence_detection/ Person and face presence (YuNet, YOLOv8n fallback)
+    stage02_face_recognition/   SFace recognition, consent flow, MySQL/SQLite memory
+    stage03_proactive_greeting/ Greeting state machine
+    stage04_speech_to_text/     Microphone, echo cancellation, Whisper, end-of-turn detection
+    stage05_nlu_dialogue/       Knowledge base, answer chain, robot identity, visit memory
+    stage06_text_to_speech/     Kokoro and Piper voices, audio output
+    stage07_data_pipeline/      Website scraper and indexer
+    stage08_orchestrator/       main_live.py, the running robot
+    stage09_deployment/         Startup scripts and latency logging
+  tests/                        pytest suite and simulated end-to-end visits
+  .env.example                  Every setting, with defaults
+  requirements*.txt             Dependency sets (see Installation)
+```
+
+## Troubleshooting
+
+**`ModuleNotFoundError`**: the virtual environment is not active. Your prompt should start with
+`(.venv)`.
+
+**PowerShell says running scripts is disabled**: run
+`Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` once.
+
+**OpenCV conflict (`cv2` errors, "recursion is detected during loading of cv2")**: ultralytics
+installs `opencv-python` next to `opencv-contrib-python`. Run `pip uninstall -y opencv-python`.
+If that does not fix it, uninstall both and reinstall `opencv-contrib-python==4.9.0.80`. The
+`pip check` warning about ultralytics afterwards is expected.
+
+**pip tries to build packages from source**: you are probably on Python 3.13. Use Python 3.10.
+
+**Whisper runs on the CPU although there is a GPU**: install `requirements-gpu.txt`. The startup
+log prints `[stt] Whisper is running on the GPU.` when it works.
+
+**MySQL "access denied"**: check `.env` for stray quotes or trailing spaces in the password. The
+robot still runs without MySQL and uses SQLite instead.
+
+**Generic answers with no university content**: the scrape failed or the cache is stale. Run with
+`--refresh` and look for `Indexed N chunks` in the log.
+
+**The robot interrupts itself, or you have to shout to interrupt it**: check the startup line
+`[barge-in] this room returns the robot's own voice at RMS ...`. With echo cancellation it should
+be around 0.002 to 0.005. Move the microphone away from the speaker or lower the volume.
+`INTERRUPTION_ENABLED=false` turns barge-in off.
+
+**Wrong microphone or speaker**: run `list_audio_devices.py` and set `MIC_DEVICE` or
+`SPEAKER_DEVICE` to part of the device name.
+
+**`[audio] input overflow`**: set `AUDIO_CAPTURE_PROCESS=true` or lower `VISION_FPS`.
+
+**The voice is Piper instead of Kokoro**: the Kokoro model is missing, or the computer synthesizes
+it less than twice as fast as real time. The startup log says which. `TTS_BACKEND=kokoro` forces
+it.
+
+## Roadmap
+
+- Choose and document the deployment hardware (computer, camera, microphone, speaker, enclosure).
+- Make the camera index configurable instead of fixed at 0.
+- Animatronic head as an alternative to the on-screen face.
+- Arabic and Chinese speech and answers.
+- Rotating log files and alerts when a stage is slow.
+- A vector index if the knowledge base grows beyond what brute-force search handles.
+
+## License
+
+Released under the [MIT License](LICENSE).
+
+Some dependencies use copyleft licences: ultralytics (AGPL-3.0, only used for the YOLO fallback
+in `requirements.txt`) and Piper (GPL-3.0-or-later). Check their terms before distributing a
+build that includes them.
+
+## Acknowledgements
+
+- [OpenCV Zoo](https://github.com/opencv/opencv_zoo) for the YuNet and SFace models
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and OpenAI Whisper
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) for the streaming Zipformer recognizer
+- [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) and [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx)
+- [Piper](https://github.com/OHF-Voice/piper1-gpl)
+- [Smart Turn](https://github.com/pipecat-ai/smart-turn) for end-of-turn detection
+- [openWakeWord](https://github.com/dscripka/openWakeWord)
+- [LiveKit](https://github.com/livekit/python-sdks) for the WebRTC echo canceller
+- [sentence-transformers](https://www.sbert.net) and all-MiniLM-L6-v2
+- [MediaPipe](https://developers.google.com/mediapipe) for lip movement detection
+- [Ollama](https://ollama.com), Groq and Google Gemini for the language models

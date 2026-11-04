@@ -230,39 +230,39 @@ university facts must still never be hallucinated. Those two goals need differen
 ```
 question
    │
-   ▼
-identity check (identity.py) ──▶ IDENTITY if it's about the robot itself - offline, no KB, no LLM
+   v
+identity check (identity.py) ──> IDENTITY if it's about the robot itself - offline, no KB, no LLM
    │ (no match)
-   ▼
+   v
 knowledge base search
    │
-   ├─ found something ──▶ GENERAL_INFO
+   ├─ found something ──> GENERAL_INFO
    │                       ("where is X" questions land here too - the building-directory chunks
    │                       already state the floor, so a floor-only answer comes straight out of
    │                       this same grounded path. No separate wayfinding/directions stage.)
    │                        │
-   │                        ├─ top chunk is_direct_answer ──▶ spoken VERBATIM, no LLM call at all
+   │                        ├─ top chunk is_direct_answer ──> spoken VERBATIM, no LLM call at all
    │                        │                                  (the curated directory entries are
    │                        │                                   already finished sentences - see
    │                        │                                   below)
-   │                        └─ otherwise ──▶ three-tier fallback:
+   │                        └─ otherwise ──> three-tier fallback:
    │                             1. generate_grounded_answer(chunks) - answer strictly from the
    │                                retrieved text (the normal, best case)
    │                             2. failed, OR succeeded but honestly said it doesn't have the
-   │                                info ──▶ classify_and_answer_general() - a LIVE search
+   │                                info ──> classify_and_answer_general() - a LIVE search
    │                                instead of trusting a possibly-incomplete scraped fragment
-   │                             3. both empty ──▶ speak the matched chunk verbatim, so the
+   │                             3. both empty ──> speak the matched chunk verbatim, so the
    │                                robot still says something real rather than going silent
    │
-   └─ found nothing ──▶ ask the model: does this even sound like a university question?
+   └─ found nothing ──> ask the model: does this even sound like a university question?
                             │
-                            ├─ yes ──▶ UNKNOWN: try to answer anyway (own knowledge, or a live
+                            ├─ yes ──> UNKNOWN: try to answer anyway (own knowledge, or a live
                             │           Google Search for GeminiAnswerGenerator) - flagged as
                             │           unverified with a pointer to lincoln.edu.my rather than
                             │           stated as certain. Only falls back to the fixed apology
                             │           if the generator truly has nothing (never a silent
                             │           response either way).
-                            └─ no  ──▶ GENERAL_CHAT: answered openly, no grounding constraint
+                            └─ no  ──> GENERAL_CHAT: answered openly, no grounding constraint
 ```
 
 Changed 2026-08-19: the GENERAL_INFO path's fallback-on-failure moved from `AnswerGenerator` (each

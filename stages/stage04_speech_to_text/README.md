@@ -17,29 +17,30 @@
   turned into a repeatable script with a per-category WER breakdown.
 - `record_sample.py` — records real test samples through your mic and fills in
   `test_samples/manifest.json` automatically (correct WAV format, auto-stop-on-silence, no
-  hand-edited JSON). Run this before `evaluate_wer.py` if the manifest is still empty.
+  hand-edited JSON). Run this before `evaluate_wer.py`. Recordings stay local: `test_samples/` is
+  gitignored because it holds real voices.
 
 ## Pipeline
 
 ```
 microphone
    │
-   ▼
+   v
 preprocessing (audio_preprocessing.py - opt-in: denoise + normalize)
    │
-   ▼
+   v
 VAD (webrtcvad, streaming) ── decides when an utterance starts/ends
    │
-   ▼
+   v
 ASR (faster-whisper, word-level confidence)
    │
-   ▼
+   v
 domain vocabulary correction (vocabulary_correction.py - opt-in, low-confidence words only)
    │
-   ▼
+   v
 confidence gating (ConfidenceReport.is_reliable)
    │
-   ▼
+   v
 final text
 ```
 

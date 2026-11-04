@@ -1,12 +1,13 @@
-# Installing AI-Reception-Robot
+# Setup guide
 
-From an empty machine to a talking robot. Every step is one-time unless it says otherwise.
+Detailed installation steps. The short version is in the [README](../README.md#installation).
+Every step is one-time unless it says otherwise.
 
 Two things to know before you start:
 
 - **One virtual environment at the project root** (`.venv/`), shared by all ten stages — not one
   per stage. Stage 08 imports from every other stage at once, so they have to live together.
-- **Nothing large is in this repository.** Model weights (~170MB), the knowledge-base cache and
+- **Nothing large is in this repository.** Model weights, the knowledge-base cache and
   your `.env` are all gitignored on purpose. Steps 4–6 below fetch them; each is a single
   command.
 
@@ -35,8 +36,8 @@ python --version
 ## 1. Clone the repository
 
 ```powershell
-git clone https://github.com/DevByError/robot_LUC.git
-cd robot_LUC
+git clone https://github.com/DevByError/AI-Reception-Robot.git
+cd AI-Reception-Robot
 ```
 
 Everything below is run **from the project root** (the folder containing `README.md`), unless a
@@ -150,20 +151,16 @@ pip install -r requirements-gpu.txt
 Startup then prints `[stt] Whisper is running on the GPU.` The versions in that file are pinned
 on purpose: the cuDNN version has to match the one Whisper's engine ships with.
 
-### The opencv wrinkle
+### OpenCV conflict
 
-`opencv-contrib-python` is a strict superset of `opencv-python`, and the two overwrite each
-other's files if both are installed. `requirements.txt` lists only the contrib build — but
-ultralytics declares plain `opencv-python` as its own dependency, so pip installs it anyway.
-After the install above, remove it:
+ultralytics installs `opencv-python` next to `opencv-contrib-python`. Remove the plain build after
+installing `requirements.txt`:
 
 ```powershell
 pip uninstall -y opencv-python
 ```
 
-`pip check` will then report that ultralytics is missing a requirement. That warning is expected
-and safe to ignore: `opencv-contrib-python` provides the exact same `cv2` module ultralytics
-imports, pip just cannot tell that from package names alone.
+The `pip check` warning about ultralytics afterwards is expected.
 
 ### Verify the install
 
@@ -186,19 +183,18 @@ python stages\stage00_setup\test_speaker_device.py
 
 ## 4. Download the model weights
 
-**The new models, in one command** (Kokoro voice, streaming speech recognizer, end-of-turn
-model, ONNX sentence embeddings, wake word; about 370MB, checksums verified):
+**Kokoro voice, streaming speech recognizer, end-of-turn model, ONNX sentence embeddings and
+wake word** (about 370MB, checksums verified):
 
 ```powershell
 python stages\stage00_setup\download_models.py
 ```
 
-`--list` shows what is present. Anything missing falls back to the older component, and the
-startup log says which. The rest of this step covers the models that were already there.
+`--list` shows what is present. Anything missing falls back to another component, and the
+startup log says which.
 
-None of these are in the repository — they are large binaries with a one-command re-download, so
-they are gitignored. Around 170MB here, plus ~500MB more the first time Whisper and the
-sentence-transformer run.
+None of the models are in the repository. Whisper and the sentence-transformer add about 500MB
+on their first run.
 
 **Face detection + recognition** (YuNet ~338KB, SFace ~37MB). This one **must** run from the
 stage folder — it saves next to itself:
@@ -314,8 +310,7 @@ GEMINI_API_KEY=...   # free tier, no card needed - aistudio.google.com
 GROQ_API_KEY=...     # free daily quota, no card needed
 ```
 
-`ANTHROPIC_API_KEY` also works, but Claude is no longer the default pick — see
-`stages/stage05_nlu_dialogue/dialogue_manager_live.py`.
+`ANTHROPIC_API_KEY` is also supported when `claude` is added to `ANSWER_BACKENDS`.
 
 The Groq key can also do the robot's hearing. Add `STT_CLOUD=groq` and each finished question is
 transcribed by Groq's Whisper large-v3, a much bigger model than the one on the laptop, while the
@@ -328,7 +323,7 @@ STT_CLOUD=groq
 
 At startup the log says `[stt] Groq whisper-large-v3 is ready` (or why not), and each question
 shows `[stt] Groq (whisper-large-v3, 640ms)`. A recording of every question is then sent to Groq —
-see `docs/PRIVACY.md`.
+see [PRIVACY.md](PRIVACY.md).
 
 ---
 
@@ -340,7 +335,7 @@ Activate the venv first (step 2), then:
 python stages\stage08_orchestrator\main_live.py
 ```
 
-The first launch scrapes lincoln.edu.my and embeds ~14,800 chunks — that takes a few minutes. The
+The first launch scrapes the university website and embeds about 14,800 chunks — that takes a few minutes. The
 result is cached to disk with a 24-hour expiry, so every launch after that starts quickly. Force
 a fresh scrape any time with:
 
@@ -359,13 +354,14 @@ automatically at boot, see `stages/stage09_deployment/README.md`.
 ### Run the tests
 
 ```powershell
-python -m pytest tests -m "not e2e"     # ~1 minute, no hardware needed
-python -m pytest tests                   # + the two simulated end-to-end visits (~3 minutes)
+pip install -r requirements-dev.txt
+python -m pytest -m "not e2e"     # ~1 minute, no hardware needed
+python -m pytest                  # + the two simulated end-to-end visits (~3 minutes)
 ```
 
 The end-to-end tests need the models from step 4. They play a whole visit through a simulated
 camera, microphone and speaker: greeting, a question, an interruption, a bystander, the wake word
-and the goodbye. See `docs/RESULTS.md` for the measured numbers.
+and the goodbye. See [RESULTS.md](RESULTS.md) for the measured numbers.
 
 ### Trying a single stage on its own
 
@@ -407,58 +403,4 @@ cross-platform list.
 
 ## Troubleshooting
 
-**`ModuleNotFoundError` on anything** — the venv is not active. Look for `(.venv)` in your prompt.
-
-**`running scripts is disabled on this system`** — see the `Set-ExecutionPolicy` line in step 2.
-
-**`cv2` errors, or "recursion is detected during loading of cv2"** — you have both opencv builds
-installed. Run `pip uninstall -y opencv-python opencv-contrib-python`, then
-`pip install opencv-contrib-python==4.9.0.80`.
-
-**pip wants to build a wheel from source, or asks for a C compiler** — you are most likely on
-Python 3.13+, where several of these pins have no prebuilt wheel. Use Python 3.10.
-
-**MySQL "access denied" with a password you are sure is right** — check for stray quotes or
-trailing spaces in `.env`. The loader strips one layer of matching quotes, but nothing else.
-
-**The robot answers, but generically, and never quotes real university content** — the scrape
-failed or the cache is stale. Re-run with `--refresh` and watch the startup log for
-`Indexed N chunks`.
-
-**The robot answers the wrong person in a group** — `mediapipe` is not installed. It degrades
-rather than crashing, so this shows up as behaviour, not as an error. Re-run step 3.
-
-**Piper says the voice file is missing** — the download in step 4 landed in the wrong folder. It
-must be inside `stages/stage06_text_to_speech/`.
-
-**The robot interrupts itself, or you have to shout to interrupt it** — look at the startup line
-`[barge-in] this room returns the robot's own voice at RMS ...`. With echo cancellation on, it
-should be around 0.002-0.005. A much higher value means the microphone is very close to the
-speaker or the speaker distorts. Move them apart, lower the volume, or use a speakerphone with
-its own echo cancellation. `INTERRUPTION_ENABLED=false` switches barge-in off.
-
-**`[aec] echo cancellation unavailable`** — `pip install livekit==1.0.0 "protobuf<5"`. Without it
-the robot still works, but barge-in falls back to "talk louder than the speaker".
-
-**The wrong microphone or speaker is used** — run `python stages\stage00_setup\list_audio_devices.py`
-and set `MIC_DEVICE` / `SPEAKER_DEVICE` in `.env` to part of the device name.
-
-**`[audio] input overflow`** — the computer is too busy to read the microphone in time. Set
-`AUDIO_CAPTURE_PROCESS=true` (reads it in a separate process) and/or lower `VISION_FPS`.
-
-**The voice is Piper, not Kokoro** — the log says why: either the model is not downloaded (step 4)
-or this computer synthesizes Kokoro less than 2x faster than real time. `TTS_BACKEND=kokoro` forces it.
-
----
-
-## Licensing note before you ship this
-
-Two dependencies carry copyleft terms that matter if this robot is ever distributed as
-closed-source software to the university:
-
-- **ultralytics** (Stage 01) — AGPL-3.0
-- **Piper** (Stage 06) — GPL-3.0-or-later, and each voice model has its own separate licence
-
-Fine for prototyping and internal use. Get legal review before a production deployment. Nearly
-every other dependency here was chosen partly to avoid this problem — see the per-stage
-`requirements.txt` comments for the reasoning behind each one.
+See [Troubleshooting](../README.md#troubleshooting) in the README.

@@ -1,4 +1,4 @@
-# Measured results (2026-10-27 upgrade)
+# Measured results
 
 Every number here was measured, not estimated. They come from a 4-core Linux machine with no
 GPU, which is slower than a laptop with a GTX 1650, so the timings are pessimistic for that
@@ -63,9 +63,9 @@ someone is being served and during the echo measurement.
 
 ## 3. Speech recognition
 
-The seven recordings in `stages/stage04_speech_to_text/test_samples` (five clean, two noisy).
-Whisper was run as the sherpa-onnx export of small.en, because huggingface.co, where
-faster-whisper downloads from, is blocked on the test machine:
+Seven local recordings (five clean, two noisy). Recordings are not published; make your own with
+`stages/stage04_speech_to_text/record_sample.py` and score them with `evaluate_wer.py`.
+Whisper was run as the sherpa-onnx export of small.en:
 
 | Recognizer | Word error rate | Whole clip, CPU | Wait after the speaker stops |
 |---|---|---|---|

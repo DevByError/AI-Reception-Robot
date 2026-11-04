@@ -88,7 +88,7 @@ point of failure:
                           RETRIEVAL                              GENERATION
                     (which facts are relevant)              (turning them into a sentence)
 
-  question ──▶ embed the query ──▶ cosine search ──▶ chunks ──▶ 1. cloud LLM  (Gemini/Groq)
+  question ──> embed the query ──> cosine search ──> chunks ──> 1. cloud LLM  (Gemini/Groq)
                      │                                          2. local LLM  (Ollama)
                      ├─ sentence-transformers (default,         3. the chunk, spoken verbatim
                      │  in-process, offline)
