@@ -28,7 +28,7 @@ MATCH_SCORE_THRESHOLD = 85
 # string appear inside the long one" and deliberately does NOT penalise the length difference.
 # That is the right behaviour for matching a phrase against a longer phrase, and completely wrong
 # here, where a single low-confidence WORD is being replaced. Measured against this project's own
-# vocabulary (2026-09-05):
+# vocabulary:
 #
 #     heard "a"     -> "Lina"         WRatio 90.0   <- accepted, and badly wrong
 #     heard "Alex"  -> "Alex Tan"  WRatio 90.0   <- accepted, replaced a name with a longer one
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     print(f"Low-confidence 'banana' (no good match) -> {no_match!r}")
     assert no_match is None
 
-    # --- containment accidents (2026-09-05) ---------------------------------------------------
+    # --- containment accidents ---------------------------------------------------
     # A short low-confidence word must never be "corrected" into a longer one that merely
     # CONTAINS it. Both of these scored 90 on WRatio - above MATCH_SCORE_THRESHOLD - purely
     # because of the partial-ratio component, and were being accepted before MIN_WHOLE_WORD_RATIO

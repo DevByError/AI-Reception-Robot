@@ -11,7 +11,7 @@ the data, and the deployed kiosk is expected to have a server it can point at. N
 MySQL-specific beyond the DDL dialect, so a different backend would only mean rewriting
 SCHEMA_STATEMENTS.
 
-SQLITE FALLBACK (added 2026-10-27): a robot without a MySQL server used to run with no memory
+SQLITE FALLBACK: a robot without a MySQL server used to run with no memory
 at all - every enrolled face forgotten on exit. LUC_DB_BACKEND=auto (the default) now uses MySQL
 when it answers and otherwise a SQLite file, data/robot_memory.db, with the same tables and the
 same cascade deletes; nothing to install. LUC_DB_BACKEND=mysql or =sqlite forces one. Open the
@@ -79,7 +79,7 @@ DEFAULTS = {
     "port": 3306,
     "user": "root",
     "password": "",
-    "database": "luc_robot",
+    "database": "ai_reception_robot",
 }
 
 

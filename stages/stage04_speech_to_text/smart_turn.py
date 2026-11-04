@@ -1,5 +1,5 @@
 """
-Stage 04 - "has this person finished speaking?", answered by a model. Added 2026-10-27.
+Stage 04 - "has this person finished speaking?", answered by a model.
 
 The robot used to decide that from silence alone (plus a pitch heuristic): wait 550-1500ms of
 quiet, then answer. Silence is a poor signal - people pause mid-sentence ("where is the... um...

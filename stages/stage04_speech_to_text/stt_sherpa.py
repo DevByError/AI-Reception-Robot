@@ -1,5 +1,5 @@
 """
-Stage 04 - a streaming speech recognizer for very small computers. Added 2026-10-27.
+Stage 04 - a streaming speech recognizer for very small computers.
 
 STT_BACKEND=sherpa swaps Whisper for sherpa-onnx's streaming Zipformer (Apache-2.0, ~70MB
 int8). The difference is WHEN the work happens: Whisper transcribes the whole utterance after

@@ -1,5 +1,5 @@
 """
-Stage 08 - was that sentence meant for the robot? Added 2026-10-27.
+Stage 08 - was that sentence meant for the robot?
 
 The gap this closes: once a visit started, EVERYTHING the microphone heard was treated as a
 question. Two friends talking to each other in front of the robot got answered; so did someone

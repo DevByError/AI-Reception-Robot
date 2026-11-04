@@ -1,4 +1,4 @@
-# LUC-Robot - every runtime dependency of every stage, in one file.
+# AI-Reception-Robot - every runtime dependency of every stage, in one file.
 #
 # This is the "install it all at once" path, for a fresh clone or the kiosk device:
 #

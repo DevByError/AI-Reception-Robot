@@ -1,5 +1,5 @@
 """
-Stage 06 - Kokoro-82M, the natural-sounding voice. Added 2026-10-27.
+Stage 06 - Kokoro-82M, the natural-sounding voice.
 
 Why: Piper's en_US-amy-medium is fast but flat - it is the main reason the robot "sounds like a
 robot". Kokoro-82M (Apache-2.0 weights) is one of the most natural open voices that still runs on

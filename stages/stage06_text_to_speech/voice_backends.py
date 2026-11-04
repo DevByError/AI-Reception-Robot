@@ -1,5 +1,5 @@
 """
-Stage 06 - which voice speaks: Kokoro (natural) or Piper (fast). Added 2026-10-27.
+Stage 06 - which voice speaks: Kokoro (natural) or Piper (fast).
 
 Both backends have the same shape - `sample_rate`, and `synthesize(text, rate)` yielding int16
 numpy chunks - so LiveTTSSpeaker does not care which one it has.

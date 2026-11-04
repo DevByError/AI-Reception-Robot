@@ -15,7 +15,7 @@ real query/chunk pairs - so this script does exactly that, using the real buildi
 (SAMPLE_CHUNKS from dialogue_manager_live.py) and a mix of paraphrased positive queries (should
 match) and genuinely unrelated negative queries (should not match).
 
-Also covers a second, different failure mode (added 2026-08-19): even when the directory chunk
+Also covers a second, different failure mode: even when the directory chunk
 IS above the relevance threshold, it can still lose the #1 ranking spot to an unrelated but
 keyword-dense chunk from Stage 07's real scraped corpus - a threshold can't fix that, only
 KnowledgeChunk.boost can (see DIRECTORY_BOOST in dialogue_manager_live.py). ADVERSARIAL_CHUNKS

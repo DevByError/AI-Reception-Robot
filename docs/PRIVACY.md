@@ -33,7 +33,7 @@ guardrails from day one, not as an afterthought.
 
    The kiosk notice (rule 6) must say that conversations are recorded, not only that there's a
    camera. This is the one part of this policy a student cannot infer from looking at the robot.
-8. **Remembered facts** (added 2026-09-05): at the end of a visit the robot extracts a handful of
+8. **Remembered facts**: at the end of a visit the robot extracts a handful of
    short notes about the student — what they were asking about, anything worth knowing next time
    — and stores them in `person_facts`, so a returning visitor can be greeted with "did you get
    anywhere with the Master of Computer Science?" rather than only being identified.
@@ -67,14 +67,14 @@ guardrails from day one, not as an afterthought.
 
 ## Where the data actually lives
 
-A MySQL database (default name `luc_robot`), six tables — `robot_identity`, `people`,
+A MySQL database (default name `ai_reception_robot`), six tables — `robot_identity`, `people`,
 `face_embeddings`, `conversations`, `utterances`, `person_facts`. Only the last five hold
 anything about a visitor; `robot_identity` is the robot's own name and its creator's contact
 details, which is configuration rather than personal data collected from anybody. Schema and
 every statement that touches it are in `stages/stage02_face_recognition/robot_db.py`; connection
 settings come from a gitignored `.env` at the project root (`.env.example` is the template).
 
-**Without MySQL** (added 2026-10-27): if no MySQL server answers, the robot now keeps the same
+**Without MySQL**: if no MySQL server answers, the robot now keeps the same
 six tables in a local SQLite file, `data/robot_memory.db` (or `LUC_DB_SQLITE_PATH`), instead of
 running with no memory. Everything in this policy applies to that file exactly as to MySQL - the
 same consent rules, the same cascade deletes (SQLite enforces them; `PRAGMA foreign_keys = ON`
@@ -119,7 +119,7 @@ This file is reference-only — the technical implementation of the consent flag
 auto-expiry policy lives in `stages/stage02_face_recognition/face_memory.py`, and the storage
 and cascade-delete behaviour in `stages/stage02_face_recognition/robot_db.py`.
 
-## What leaves the robot (added 2026-10-27)
+## What leaves the robot
 
 Faces and the database never leave the computer, and neither do voices unless `STT_CLOUD=groq`
 is set (below): face detection and recognition, speech recognition (Whisper or the streaming

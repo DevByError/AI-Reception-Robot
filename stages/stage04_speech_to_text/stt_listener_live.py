@@ -148,7 +148,7 @@ PARTIAL_INTERVAL_S = RT.PARTIAL_INTERVAL_S  # how often to re-preview after that
 # silence counter nor the pitch contour ever gets a chance to fire. 0 disables it.
 TURN_STABLE_PARTIALS = RT.TURN_STABLE_PARTIALS
 # ...and one more ends the turn even when the words sound unfinished. From a real run on the
-# Realtek mic array (2026-10-27): the partial stayed "[??] [??] is" for four previews in a row
+# Realtek mic array: the partial stayed "[??] [??] is" for four previews in a row
 # while the VAD kept reporting speech, the "ends mid-thought" guard (it ends on "is") blocked the
 # rule above, and the visitor waited for the 15-second cap. At the defaults this is about five
 # seconds with no new word while the microphone still "hears speech" - past that point the guard
@@ -274,7 +274,7 @@ INSTITUTION_VOCABULARY = [
     "Student Affairs",
     "Library",
     "Mosque",
-    # Common question/preposition words - added after a real report (2026-08-12) that these were
+    # Common question/preposition words - added after a real report that these were
     # frequently coming out as LOW_CONFIDENCE_MARKER ("[??] is the Engineering Department?")
     # instead of the actual word. This is a different failure mode from the proper-noun entries
     # above, and the fix belongs here (vocabulary_correction) rather than in the initial prompt:
@@ -303,7 +303,7 @@ INSTITUTION_VOCABULARY = [
     "to",
     "in",
     "on",
-    # Same fix, same reasoning, extended after a second real report (2026-08-19): "the"/"are"/
+    # Same fix, same reasoning, extended after a second real report: "the"/"are"/
     # "is"/"so" were the specific words showing up as "[??]" in that run ("[??] yeah, it's [??]
     # engineering department", "Who [??] you?"), and a corrupted query text like that is what
     # sent a garbled question into knowledge-base search at all - not a retrieval bug on its own.
@@ -1013,7 +1013,7 @@ class WhisperSTTEngine:
     ) -> list[TranscriptChunk]:
         audio = _pcm_bytes_to_float32(b"".join(audio_chunks))
 
-        # Peak normalization always runs now (2026-08-19) - previously bundled behind
+        # Peak normalization always runs now - previously bundled behind
         # denoise_enabled, which meant a quiet/far mic never got leveled at all unless the
         # riskier spectral denoise was also switched on. Pure gain adjustment, no information
         # removed, so there's no accuracy downside to always applying it (unlike denoise() below).
@@ -1191,7 +1191,7 @@ def identity_vocabulary() -> list[str]:
     reasoning as "Lincoln" in INSTITUTION_VOCABULARY: without a hint, Whisper has nothing in its
     training data biasing it toward an uncommon name over a more common-sounding near-homophone.
 
-    Derived from the database-backed profile instead of being listed literally (2026-09-04), and
+    Derived from the database-backed profile instead of being listed literally, and
     split into parts as well as the full name because a visitor says "who is Tan" at least as
     often as the full name. dict.fromkeys de-duplicates while keeping order, which matters for a
     single-word creator name where the name and its only part are the same string.

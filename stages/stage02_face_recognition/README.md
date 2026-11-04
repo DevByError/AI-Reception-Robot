@@ -63,7 +63,7 @@ The robot needs a running MySQL server — locally that's the one behind MySQL W
    python stages\stage02_face_recognition\robot_db.py --self-test
    ```
 
-Refresh the schema list in Workbench afterwards and you'll see `luc_robot` with five tables:
+Refresh the schema list in Workbench afterwards and you'll see `ai_reception_robot` with five tables:
 `robot_identity`, `people`, `face_embeddings`, `conversations`, `utterances`. `robot_identity` is
 what the robot says about itself (Stage 05's `identity.py` reads it) — the others are visitor
 data. See `docs/PRIVACY.md` for what's in

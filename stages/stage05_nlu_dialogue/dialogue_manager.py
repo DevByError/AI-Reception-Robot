@@ -60,11 +60,9 @@ FALLBACK_ANSWER = (
 # AFFIRMATIVE_PHRASES - a phrase list to catch real observed wording, not a strict parser; add to
 # this if a real "I don't know" response slips through unrecognized.
 #
-# Added 2026-08-19: without this, a grounded answer that honestly said "I don't have that
-# information" was treated as a final, successful answer - correct in that it didn't hallucinate,
-# but it stopped short of trying a live search, which is what an explicit request asked for ("such
-# answers should come from the API if we don't have it - read from the website"). See
-# handle_question() below for where this is used.
+# Without this, a grounded answer that said "I don't have that information" was treated as a
+# final answer and the robot never tried a live search. See handle_question() for where this is
+# used.
 _GROUNDED_NO_INFO_PHRASES = (
     "don't have that information", "do not have that information",
     "don't have information", "do not have information",
@@ -241,13 +239,13 @@ class AnswerGenerator(Protocol):
 
         May raise on failure (a network/API problem) rather than catch-and-return a fallback
         itself - see handle_question() below for why that responsibility moved to the caller
-        (2026-08-19): a single generator-level fallback ("just read the top chunk verbatim") was
+       : a single generator-level fallback ("just read the top chunk verbatim") was
         too blunt, since a raw scraped chunk isn't reliably a complete sentence the way the
         curated directory chunks are."""
         ...
 
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
-        """Called when the knowledge base found NOTHING for the question, OR (2026-08-19) as a
+        """Called when the knowledge base found NOTHING for the question, OR as a
         second-tier fallback when it found something but generate_grounded_answer() couldn't
         actually answer from it (failed outright, or honestly said it didn't have the info) -
         see handle_question() below. Returns (is_university_related, answer):
@@ -341,7 +339,7 @@ class DialogueManager:
                  stream_general: bool = True):
         self.kb = kb
         self.answer_generator = answer_generator
-        # Stream general (no knowledge-base match) answers too - added 2026-10-27. Before,
+        # Stream general (no knowledge-base match) answers too. Before,
         # those always waited for the model's complete reply, because of the two-line format;
         # strip_general_header() now parses that format on the fly.
         self.stream_general = stream_general
@@ -381,7 +379,7 @@ class DialogueManager:
         either failed or honestly admitted it had nothing, so try a live search, and fall back to
         the matched chunk verbatim only if that comes back empty too.
 
-        Extracted (2026-09-05) so the streaming path can reuse the identical policy - the whole
+        Extracted so the streaming path can reuse the identical policy - the whole
         point of that chain is that it is ONE decision about what the robot says when grounding
         fails, and a second copy for the streaming caller would be a second place to keep in
         sync."""
@@ -404,7 +402,7 @@ class DialogueManager:
         stream so Stage 06 can start speaking sentence one while sentence two is still being
         generated.
 
-        WHY (2026-09-05): handle_question() cannot return until the model has produced the whole
+        WHY: handle_question() cannot return until the model has produced the whole
         answer, so Piper - which has streamed sentence-by-sentence since Stage 06 was written -
         sat idle for the full generation (~1-2s) before the first word reached the speaker. That
         silence is the single biggest thing that made the robot feel like a machine rather than a
@@ -541,7 +539,7 @@ class DialogueManager:
         chunks = _chunks if _chunks is not None else self._search(question, history)
         self._prefetched = None
         if chunks:
-            # Fast path (added 2026-08-19): the best-matching chunk is already a finished,
+            # Fast path: the best-matching chunk is already a finished,
             # spoken-ready sentence, so speak it as-is instead of paying a real 1-3 second LLM
             # round-trip to rephrase a sentence into itself. See KnowledgeChunk.is_direct_answer
             # in knowledge_base.py for exactly which chunks qualify and why scraped web content
@@ -654,7 +652,7 @@ if __name__ == "__main__":
     assert r4.intent == Intent.GENERAL_INFO
     assert r4.used_chunks
 
-    # --- is_direct_answer fast path (2026-08-19) -------------------------------------------
+    # --- is_direct_answer fast path -------------------------------------------
     # A generator that LOUDLY fails if it's called at all, so "the fast path skipped the LLM" is
     # actually proven rather than assumed - a plain mock returning chunks[0].text would produce
     # an identical answer whether or not the optimization worked, and would silently keep passing
@@ -700,7 +698,7 @@ if __name__ == "__main__":
         f"'Civil Engineering Department' chunk, the boost-based ranking regressed too"
     )
 
-    # --- identity routing (2026-08-19) -------------------------------------------------------
+    # --- identity routing -------------------------------------------------------
     # Proves handle_question() actually wires to detect_identity_answer() and short-circuits
     # BEFORE the knowledge base or the LLM - identity.py's own __main__ already exercises the
     # detection logic thoroughly, this is only about the wiring. Uses the same
@@ -739,7 +737,7 @@ if __name__ == "__main__":
     assert me.creator_name in r7.answer
     assert "should never be reached" not in r7.answer
 
-    # --- three-tier grounded-answer fallback (2026-08-19) -----------------------------------
+    # --- three-tier grounded-answer fallback -----------------------------------
     # Real bug this reproduces: "where is Lincoln University College located" hit a Gemini 503
     # on generate_grounded_answer() and the OLD behavior silently spoke the raw matched chunk
     # ("Lincoln University College" - a title fragment, not an answer). Each generator below
@@ -812,7 +810,7 @@ if __name__ == "__main__":
           "non-direct-answer chunk that can't be grounded (failure or honest 'I don't know') "
           "falls through to a live search before ever falling back to a raw fragment.")
 
-    # --- streaming route (2026-09-05) -----------------------------------------------------
+    # --- streaming route -----------------------------------------------------
     # handle_question_stream() must make exactly the same decisions as handle_question(), just
     # delivering the grounded answer incrementally. Three things are checked here, all of them
     # ways the streaming path could quietly be WORSE than the blocking one it replaces:
@@ -935,7 +933,7 @@ if __name__ == "__main__":
     assert "".join(r15.pieces).strip() == "It's a two year programme."
     print("A chain that can't actually stream still uses the ordinary grounded call - OK")
 
-    # --- follow-up questions within one visit (2026-09-05) --------------------------------
+    # --- follow-up questions within one visit --------------------------------
     # The second thing a person says is rarely self-contained. Before this, "how long is it?"
     # after a question about a programme searched the knowledge base for the literal words "how
     # long is it", matched something unrelated or nothing, and answered accordingly.

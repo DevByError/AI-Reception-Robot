@@ -16,12 +16,12 @@ DialogueManager never cares which one is running:
   - ChainAnswerGenerator - tries the above in order, using the first that actually answers.
   - UniversityOnlyAnswerGenerator - no LLM at all: speak the retrieved knowledge-base text
     verbatim. Zero hallucination risk, no general conversation.
-  - ClaudeAnswerGenerator (Anthropic) - kept in the file, still fully working, but not checked
-    by _build_answer_generator() by default (swapped for Gemini on 2026-08-17 per request).
+  - ClaudeAnswerGenerator (Anthropic) - optional cloud backend, used only when "claude" is
+    listed in ANSWER_BACKENDS and ANTHROPIC_API_KEY is set.
 
-WHY THE CHAIN EXISTS (2026-09-04): this project has twice been bitten by depending on a single
-cloud backend - a Gemini 503 mid-answer (2026-08-19) and a 429 on the very first question of a
-session (2026-08-17). Both times the robot fell all the way through to reading a raw scraped
+WHY THE CHAIN EXISTS: this project has twice been bitten by depending on a single
+cloud backend - a Gemini 503 mid-answer and a 429 on the very first question of a
+session. Both times the robot fell all the way through to reading a raw scraped
 page-title fragment aloud as if it were an answer. MODE = "auto" now assembles whatever backends
 are actually usable at startup, cloud first and local second, so a cloud outage costs one retry
 instead of one wrong answer. Nothing about DialogueManager or the knowledge base changes; the
@@ -125,7 +125,7 @@ GEMINI_MAX_OUTPUT_TOKENS = 1200
 # mid-conversation is exactly the kind of seam that reads as "there are two different systems in
 # here" rather than as one person talking.
 #
-# WHY THESE RULES (added 2026-09-05): the previous prompts already said "no markdown, spoken
+# WHY THESE RULES: the previous prompts already said "no markdown, spoken
 # sentences", which stopped asterisks being read aloud but did nothing about REGISTER. What came
 # out was correct, complete, and unmistakably machine-generated: full paragraphs delivered in one
 # breath, the question restated before answering it, "based on the information provided", and the
@@ -339,10 +339,7 @@ def _is_backend_unavailable(exc: Exception) -> bool:
 class GeminiAnswerGenerator:
     """Implements the same AnswerGenerator protocol as MockAnswerGenerator
     (dialogue_manager.py) - a drop-in replacement, so DialogueManager itself never changes.
-    Uses Google's Gemini API (google-genai SDK) instead of Anthropic's Claude - swapped in per
-    request (2026-08-17) to use gemini-3.7-flash instead of Claude. ClaudeAnswerGenerator above
-    is left in place (untouched, still fully working) rather than deleted, in case Claude is
-    ever wanted again - _build_answer_generator() below just no longer checks for it first.
+    Uses Google's Gemini API (google-genai SDK).
     """
 
     def __init__(self, model: str = GEMINI_MODEL, api_key: str | None = None):
@@ -486,9 +483,8 @@ class GeminiAnswerGenerator:
     def classify_and_answer_general(self, question: str) -> tuple[bool, str]:
         from google.genai import types
 
-        # Google Search grounding (2026-08-17, per request) - lets Gemini look something up for
-        # real instead of only answering from whatever it happened to memorize during training,
-        # which matters most for a smaller/less-documented institution like Lincoln University
+        # Google Search grounding lets Gemini look something up instead of answering only from
+        # its training data, which matters most for a smaller/less-documented institution like Lincoln University
         # College where the model's own training knowledge may be thin or stale. Deliberately
         # only enabled on this call, not generate_grounded_answer() above - the grounded path
         # must stay 100% restricted to the retrieved knowledge-base text, never go searching for
@@ -498,7 +494,7 @@ class GeminiAnswerGenerator:
         #
         # Search grounding is separately metered from plain generation (Google's own docs: a
         # monthly free-prompt quota, then billed per grounded request) - a real run
-        # (2026-08-17) hit a 429 RESOURCE_EXHAUSTED on the very first question, well under any
+        # hit a 429 RESOURCE_EXHAUSTED on the very first question, well under any
         # published free quota, most likely because Google now requires billing to be set up on
         # an account before some features activate at all, even at $0 (a 2026 AI Studio change).
         # Rather than let that crash the whole interaction, try search first but fall back to a
@@ -688,7 +684,7 @@ class GroqAnswerGenerator:
 
 
 # Ranking nudge for the curated facilities directory below, added after a real regression
-# (2026-08-19) where a scraped page-title chunk outranked the correct directory sentence for a
+# where a scraped page-title chunk outranked the correct directory sentence for a
 # plain "Where is the Engineering Department?" question - see KnowledgeChunk.boost's docstring
 # in knowledge_base.py. 0.15 is a starting point, not a measured constant: the per-model entries
 # in knowledge_base.py's SIMILARITY_THRESHOLDS were tuned with evaluate_retrieval.py against real
@@ -1354,7 +1350,7 @@ _CLOUD_BACKENDS = {
 
 
 def _build_cloud_generators() -> list[tuple[str, object]]:
-    """Every cloud backend that has a key, in ANSWER_BACKENDS order (changed 2026-10-27).
+    """Every cloud backend that has a key, in ANSWER_BACKENDS order.
 
     Before, only ONE cloud backend was ever used - Gemini if its key existed, otherwise Groq - so
     a robot with both keys still waited on Gemini's thinking time on every question, and lost

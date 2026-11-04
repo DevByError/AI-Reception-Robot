@@ -3,7 +3,7 @@ Stage 05 - a local LLM and a local embedding model, both served by Ollama on thi
 
 Why: every other answer path in this stage depends on somebody else's server staying up and a
 free-tier quota not running out. Gemini has already produced real failures in this project - a
-503 mid-answer (2026-08-19) and a 429 on the very first question of a session (2026-08-17) - and
+503 mid-answer and a 429 on the very first question of a session - and
 each one degraded the robot to reading a raw scraped page-title fragment aloud. A kiosk standing
 in a university lobby cannot depend on that. Ollama runs the model on this machine: no API key,
 no quota, no per-request cost, and it keeps working with the network unplugged.

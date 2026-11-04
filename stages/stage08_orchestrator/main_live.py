@@ -49,7 +49,7 @@ window and capture stay on the main thread (the portable, supported way to use t
 blocking audio/LLM work moves off it. Shared state between the two is small and explicitly
 locked - see _state_lock in __init__.
 
-Persistent memory (added 2026-09-04): enrolled faces and full conversation transcripts live in
+Persistent memory: enrolled faces and full conversation transcripts live in
 MySQL (stage02's robot_db.py) instead of only in process memory, so a student enrolled today is
 still recognized after the robot is closed and reopened - which was the whole point of asking
 for their name. Every spoken line goes in, both sides, with the timestamp and (for answers) the
@@ -332,7 +332,7 @@ CAPTURE_HEIGHT = 720
 # question ends, while the real answer is still being retrieved and generated - see stage06's
 # filler_bank.py for the full argument for them.
 #
-# OFF (2026-09-13), on explicit instruction after hearing it in use: the robot should give the
+# OFF, on explicit instruction after hearing it in use: the robot should give the
 # answer, not preface it. Worth recording what this costs, because it is not free and the
 # measurements are in this project's own logs - time-to-first-word for a grounded answer runs
 # 2.7-4.2s on this hardware, and the filler existed to make that stretch feel like the robot had
@@ -423,7 +423,7 @@ ANSWER_LATENCY_TARGET_MS = 2000.0
 GREETING_LATENCY_TARGET_MS = 1000.0
 
 # Checked as substrings against the whole cleaned utterance, not as an exact-match word set -
-# found from a real run (2026-08-12) that a plain word-by-word check gets this wrong two
+# found from a real run that a plain word-by-word check gets this wrong two
 # different ways: (1) Whisper transcribes with punctuation ("Yeah.", "Yes."), and splitting on
 # whitespace alone leaves the trailing period attached, so "yeah." never equals "yeah" as a set
 # member - real "Yeah."/"Yes." answers were silently read as "no" simply because the words never
@@ -890,7 +890,7 @@ class RobotOrchestrator:
             print(f"  {'OK     ' if present else 'missing'}  {label:<22} "
                   f"{'' if present else '(run stages/stage00_setup/download_models.py)'}")
 
-        # Presence (2026-10-27): faces by default - YuNet on a 640px copy of the frame, ~10-20ms,
+        # Presence: faces by default - YuNet on a 640px copy of the frame, ~10-20ms,
         # no PyTorch - instead of the YOLOv8 body tracker (~170ms per frame on a laptop CPU, ~2GB
         # of PyTorch, AGPL-3.0). A reception robot only needs the people whose face it can see,
         # and the face landmarks are what the "are they facing me?" gate needs anyway.
@@ -1009,7 +1009,7 @@ class RobotOrchestrator:
         # read by the conversation thread - see _visitor_present().
         self._last_seen_at = time.monotonic()
 
-        # --- who is talking to the robot (2026-10-27) ---------------------------------------
+        # --- who is talking to the robot ---------------------------------------
         # Engagement: only greet people who are near, facing the robot and staying (stage08's
         # engagement.py). Lip history: per-frame "whose lips are moving, who is facing me",
         # timestamped, so the conversation thread can ask about the exact seconds a sentence was
@@ -1058,7 +1058,7 @@ class RobotOrchestrator:
                   f"stages/stage02_face_recognition/requirements.txt")
             self.mouth_detector = None
 
-        # --- audio out and in (2026-10-27) -------------------------------------------------
+        # --- audio out and in -------------------------------------------------
         # Software echo cancellation sits between the two: every block the speaker plays is
         # handed to the canceller as the reference (AudioPlayer's far tap), and every block the
         # microphone hears is cleaned against it before anything else sees it (MicCapture). That
@@ -1169,7 +1169,7 @@ class RobotOrchestrator:
             # rather than serving last month's programme list forever. Pass --refresh (see __main__)
             # to force a fresh scrape immediately.
             #
-            # STALE-BUT-USABLE (2026-09-05): a cache older than KB_CACHE_MAX_AGE_S used to mean a
+            # STALE-BUT-USABLE: a cache older than KB_CACHE_MAX_AGE_S used to mean a
             # blocking rescrape before the robot would greet anybody - about a minute of a kiosk
             # standing there refusing to work, every time it was restarted after a day off.
             # Serving day-old programme information for a few minutes is obviously better than
@@ -1222,7 +1222,7 @@ class RobotOrchestrator:
             self.kb.upsert_many(list(SAMPLE_CHUNKS))
             print(f"Knowledge base ready: {len(self.kb)} chunk(s) total.")
 
-            # MEASURED AND REJECTED (2026-09-05): feeding the scraped programme names into
+            # MEASURED AND REJECTED: feeding the scraped programme names into
             # Whisper's hotword bias.
             #
             # The idea was that the site holds what students actually ask about - "Bachelor of
@@ -1394,13 +1394,13 @@ class RobotOrchestrator:
         # backlog drains far faster than real time, so silence_ms (counted per-frame,
         # FRAME_MS-at-a-time) and elapsed_ms (real wall-clock) fall out of lockstep - which is
         # what produced the repeated, rapid-fire "speech detected... too short - ignoring" bursts
-        # and garbled transcripts seen in real testing (2026-08-19), not a VAD-tuning problem.
+        # and garbled transcripts seen in real testing, not a VAD-tuning problem.
         #
         # (2026-10-27: with echo cancellation the backlog is no longer the robot's own voice,
         # but it is still old - and right after a wake word it is the opposite: the start of
         # the visitor's question, which is why _keep_backlog skips the drain once.)
         #
-        # And not after an interruption either (2026-10-27): the visitor is still MID-SENTENCE
+        # And not after an interruption either: the visitor is still MID-SENTENCE
         # then, and everything queued since the barge-in fired is the rest of that sentence.
         # Draining it kept only the first half-second ("Wait, the li-") and threw the question
         # away - found by the end-to-end simulation.
@@ -1425,7 +1425,7 @@ class RobotOrchestrator:
         if not carried:
             self.conv.to(ConvState.LISTENING, f"waiting up to {timeout_s:.0f}s")
 
-        # Listen until something is said TO the robot (2026-10-27). A sentence the addressee
+        # Listen until something is said TO the robot. A sentence the addressee
         # check rejects - two visitors talking to each other, somebody on the phone behind them
         # - is not answered and not recorded; the robot simply keeps listening, for whatever is
         # left of the timeout. See stage08's addressee.py.
@@ -1980,7 +1980,7 @@ class RobotOrchestrator:
                   f"{spoken['num_segments']} sentence(s))")
         # The intent is read AFTER the stream has been spoken: a streamed general answer starts
         # as GENERAL_CHAT and is corrected once the model's label line has been parsed, which
-        # happens while it is being consumed (2026-10-27).
+        # happens while it is being consumed.
         if intent is None:
             intent = getattr(getattr(result, "intent", None), "name", None)
         self._record("robot", text, intent)
@@ -2009,7 +2009,7 @@ class RobotOrchestrator:
         # total: the robot is already talking while the rest of the answer generates.
         to_first_word = m.get("retrieve+generate", 0.0) + m.get("first_audio", 0.0)
         parts = " ".join(f"{k}={v:.0f}ms" for k, v in m.items())
-        # Measured from when the visitor's voice stopped (2026-10-27), which also counts the
+        # Measured from when the visitor's voice stopped, which also counts the
         # endpointer's silence wait and the speech recognition - the wait they really have.
         heard = ""
         if stopped_at is not None and answer_at is not None:
@@ -2088,7 +2088,7 @@ class RobotOrchestrator:
         # with no route attached is a lot harder to diagnose weeks later.
         # MEASURED WITH A TIMESTAMP, NOT A CONTEXT MANAGER. tracker.measure() times the whole
         # block, and this block BLOCKS until the robot has finished speaking - so "first_audio"
-        # was really reporting the length of the answer. A real run (2026-09-17) printed
+        # was really reporting the length of the answer. A real run printed
         # "first_audio=2453ms ... SLOW" for a reply whose first word was actually out in 156ms:
         # the robot was being told off for talking for two seconds. Every latency verdict on
         # the answer path has been wrong in that direction since the tracker was first wired up.
@@ -2178,7 +2178,7 @@ class RobotOrchestrator:
     def _handle_conversation(self, first_question: str | None = None) -> None:
         """Answers questions in a loop - "do you have any other questions?" after each answer -
         instead of ending the visit after exactly one question. Found from a real test run
-        (2026-08-12): the old code asked to remember the visitor immediately after the first
+       : the old code asked to remember the visitor immediately after the first
         answer, cutting them off mid-conversation before they'd actually finished asking
         everything they came in for. Bounded by MAX_QUESTIONS_PER_VISIT so a misheard "yes" (or
         a genuinely chatty visitor) can't loop forever.
@@ -3151,7 +3151,7 @@ class RobotOrchestrator:
             quality = dict(self._face_quality_by_track)
 
         # --- what the RECOGNIZER is doing, per tracked person ---------------------------------
-        # Added 2026-09-05. Recognition was completely invisible on screen: a face that was
+        # Recognition was completely invisible on screen: a face that was
         # being ignored for being too small or too blurry looked identical to one that simply
         # did not match anybody, and a name that had been agreed by voting looked identical to a
         # single lucky frame. All three need different fixes, so all three are drawn.

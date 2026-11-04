@@ -28,7 +28,7 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 # (where the enrolled faces and transcripts live), not data/robot_memory.db, and not the robot's
 # identity_cache.json. Everything goes to a throwaway folder. The tests are written for a robot
 # called "Nova", whatever the real one is called.
-_SCRATCH = Path(tempfile.mkdtemp(prefix="luc-robot-tests-"))
+_SCRATCH = Path(tempfile.mkdtemp(prefix="ai-reception-robot-tests-"))
 os.environ["LUC_DB_BACKEND"] = "sqlite"
 os.environ["LUC_DB_SQLITE_PATH"] = str(_SCRATCH / "robot_memory.db")
 os.environ["LUC_IDENTITY_CACHE"] = str(_SCRATCH / "identity_cache.json")

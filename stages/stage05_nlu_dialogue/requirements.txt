@@ -24,7 +24,7 @@ groq==0.11.0
 # (see dialogue_manager_live.py's module docstring). New accounts get a small one-time free
 # credit, but it needs a payment method added before the API will actually use it.
 #
-# Bumped from the original 0.39.0 pin to a current release (2026-08-17) - 0.39.0 required
+# Bumped from the original 0.39.0 pin to a current release - 0.39.0 required
 # httpx==0.27.2 (it passed a 'proxies' kwarg that httpx>=0.28 removed - see
 # github.com/anthropics/anthropic-sdk-python/issues/766), which directly conflicts with
 # google-genai==2.18.1 above (needs httpx>=0.28.1) - installing both pins in the same

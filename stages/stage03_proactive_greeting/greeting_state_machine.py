@@ -48,7 +48,7 @@ class TTSStub:
 
 # Several phrasings per situation instead of one fixed string each.
 #
-# WHY (2026-09-05): the robot greeted every stranger with the identical sentence, forever. One
+# WHY: the robot greeted every stranger with the identical sentence, forever. One
 # visitor never notices - but a kiosk in a lobby is watched by the same students day after day,
 # and hearing the exact same words at the exact same moment is the clearest possible signal that
 # there is a script running. Varying the wording costs nothing and removes that tell. The
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     ])
     sm.on_interaction_timeout_or_done()
 
-    # --- wording variety + the recall line (2026-09-05) --------------------------------------
+    # --- wording variety + the recall line --------------------------------------
     import random
 
     print("\n== Case 4: the same situation does not always produce the same words ==")

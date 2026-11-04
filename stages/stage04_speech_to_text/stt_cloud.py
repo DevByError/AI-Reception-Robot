@@ -1,5 +1,5 @@
 """
-Stage 04 - the final words of each question through Groq's cloud Whisper. Added 2026-10-27.
+Stage 04 - the final words of each question through Groq's cloud Whisper.
 
     STT_CLOUD=groq          in .env, together with
     GROQ_API_KEY=...        a free key from https://console.groq.com (the same key the answers use)

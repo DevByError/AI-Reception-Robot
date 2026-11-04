@@ -1,5 +1,5 @@
 """
-Stage 08 - the robot's face on a screen (the Expression Layer). Added 2026-10-27.
+Stage 08 - the robot's face on a screen (the Expression Layer).
 
 ARCHITECTURE.md always had an expression layer; until now it was a print() ("[face] ->
 LISTENING"). People talk to a face much more naturally than to a box: they look at it, they

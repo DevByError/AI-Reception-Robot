@@ -42,7 +42,7 @@ for p in (STAGE01_DIR, STAGE02_DIR):
 
 # YOLO (ultralytics, which pulls in PyTorch) is imported only by this file's own demo below:
 # stage08 imports match_faces_to_people() from here, and the robot's default face-based presence
-# must not need PyTorch installed (2026-10-27).
+# must not need PyTorch installed.
 from presence_detector_live import (  # noqa: E402
     PerTrackPresenceTracker,
     detect_people,

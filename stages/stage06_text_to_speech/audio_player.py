@@ -1,5 +1,5 @@
 """
-Stage 06 - the one place audio leaves the robot. Added 2026-10-27.
+Stage 06 - the one place audio leaves the robot.
 
 Before this, three places opened their own output stream (answers, fillers, the greeting), each
 on "the Windows default" device. Everything now plays through AudioPlayer, which:

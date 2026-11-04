@@ -1,4 +1,4 @@
-# LUC-Robot on a small computer: everything the robot needs, without PyTorch (~2GB less).
+# AI-Reception-Robot on a small computer: everything the robot needs, without PyTorch (~2GB less).
 #
 #     pip install -r requirements-lite.txt
 #     python stages/stage00_setup/download_models.py

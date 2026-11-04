@@ -1,17 +1,17 @@
-# LUC-Robot as a systemd USER service (Linux / Jetson): starts at login, restarts on a crash.
+# AI-Reception-Robot as a systemd USER service (Linux / Jetson): starts at login, restarts on a crash.
 #
 #   mkdir -p ~/.config/systemd/user
-#   cp stages/stage09_deployment/luc-robot.service ~/.config/systemd/user/
+#   cp stages/stage09_deployment/ai-reception-robot.service ~/.config/systemd/user/
 #   # edit WorkingDirectory below if the project is not in ~/AI-Reception-Robot
 #   systemctl --user daemon-reload
-#   systemctl --user enable --now luc-robot
-#   journalctl --user -u luc-robot -f          # the robot's log
+#   systemctl --user enable --now ai-reception-robot
+#   journalctl --user -u ai-reception-robot -f          # the robot's log
 #
 # A user service (not a system one) so it can open the screen, camera and sound of the logged-in
 # user. To start without anybody logging in: sudo loginctl enable-linger $USER
 
 [Unit]
-Description=LUC-Robot reception robot
+Description=AI-Reception-Robot
 After=graphical-session.target sound.target network-online.target
 
 [Service]

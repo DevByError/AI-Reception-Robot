@@ -96,7 +96,7 @@ point of failure:
 ```
 
 **Generation** is a fallback chain, and it exists because of two real failures in this project:
-a Gemini 503 mid-answer (2026-08-19) and a 429 on the first question of a session (2026-08-17).
+a Gemini 503 mid-answer and a 429 on the first question of a session.
 Each one ended with the robot reading a raw scraped page-title fragment aloud as though it were
 an answer. A local model can't 503, can't exhaust a free tier, and doesn't need the network — so
 when the cloud call fails, the question is simply asked again locally. Cloud stays first because

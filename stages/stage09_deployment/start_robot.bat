@@ -1,5 +1,5 @@
 @echo off
-rem LUC-Robot - start the robot and restart it if it ever crashes (Windows).
+rem AI-Reception-Robot - start the robot and restart it if it ever crashes (Windows).
 rem
 rem   Double-click, or put a shortcut to this file in the Startup folder (Win+R, shell:startup)
 rem   so it starts when the robot's computer logs in.

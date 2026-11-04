@@ -201,7 +201,7 @@ class _RealtimeConfig:
         )
 
         # --- turn detection: the four numbers that decide when the robot answers --------------
-        # Named as requested; each maps onto the constant stage04 already tuned and documented.
+        # Each maps onto a constant that stage04 already tuned and documents.
         #
         #   MIN_SILENCE_DURATION  -> ENDPOINT_EAGER_MS    earliest a turn may end, and only with
         #                                                 positive evidence (a landing pitch
@@ -296,7 +296,7 @@ class _RealtimeConfig:
         # seconds of no new words - slower than a clean pitch-contour endpoint, far faster than
         # the cap, and it cannot be fooled by background noise. One more identical partial ends
         # the turn even on a transcript that DOES end mid-thought (TURN_STALL_PARTIALS in
-        # stt_listener_live.py) - added 2026-10-27 after "[??] [??] is" held a visitor until
+        # stt_listener_live.py) after "[??] [??] is" held a visitor until
         # the cap.
         #
         # Requires STREAMING_STT (there are no partials otherwise). Set to 0 to switch off.

@@ -1,5 +1,5 @@
 """
-Stage 01 (light) - presence detection from FACES instead of whole bodies. Added 2026-10-27.
+Stage 01 (light) - presence detection from FACES instead of whole bodies.
 
 Why: the YOLOv8 person tracker (presence_detector_live.py) was the single most expensive thing
 the robot did - ~170ms per frame on a laptop CPU, which held the whole camera loop to ~5fps -

@@ -7,7 +7,7 @@
   these at once. Deliberately checked before the knowledge base or any LLM call (see
   `dialogue_manager.py`'s `handle_question()`) — fully offline, plain rule-based string matching,
   no embeddings or network involved. The values themselves are **not** in the source any more
-  (2026-09-04): they come from MySQL, table `robot_identity` (schema in Stage 02's `robot_db.py`),
+ : they come from MySQL, table `robot_identity` (schema in Stage 02's `robot_db.py`),
   read once at startup and cached to `identity_cache.json` so an outage can't revert the robot to
   an old name. To change what it says:
 
@@ -85,8 +85,8 @@ from what's currently set.
 ## Local LLM via Ollama — the answer to "what if the API is down"
 
 This is not a hypothetical. The cloud backend has failed twice in real testing here: a Gemini
-**503** in the middle of an answer (2026-08-19) and a **429** on the very first question of a
-session (2026-08-17). Both times the robot fell through to reading a raw scraped page-title
+**503** in the middle of an answer and a **429** on the very first question of a
+session. Both times the robot fell through to reading a raw scraped page-title
 fragment aloud as if it were an answer. A kiosk in a university lobby can't depend on somebody
 else's free tier staying up.
 
@@ -166,7 +166,7 @@ separate document/query encodings, which this code uses) should retrieve the rig
 often on paraphrased questions, and a spoken question is almost always a paraphrase — a student
 says "what floor do I go to for nursing", not the directory's own wording.
 
-Measured on this machine (2026-09-04), on identical 400-character chunks — the size
+Measured on this machine, on identical 400-character chunks — the size
 `indexer.chunk_text()` actually produces:
 
 | | all-MiniLM-L6-v2 | ollama:nomic-embed-text |
@@ -245,7 +245,7 @@ knowledge base search
    │                        │                                  (the curated directory entries are
    │                        │                                   already finished sentences - see
    │                        │                                   below)
-   │                        └─ otherwise ──▶ three-tier fallback (2026-08-19):
+   │                        └─ otherwise ──▶ three-tier fallback:
    │                             1. generate_grounded_answer(chunks) - answer strictly from the
    │                                retrieved text (the normal, best case)
    │                             2. failed, OR succeeded but honestly said it doesn't have the

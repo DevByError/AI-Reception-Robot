@@ -14,7 +14,7 @@ LUC_EMBEDDING_BACKEND:
     paraphrased questions, which is what a spoken question usually is - a student says "what
     floor do I go to for nursing", not the directory's own wording.
 
-Switching is an ACCURACY choice and it is EXPENSIVE. Measured on this machine (2026-09-04) on
+Switching is an ACCURACY choice and it is EXPENSIVE. Measured on this machine on
 realistic 400-character chunks:
 
                               per chunk    Stage 07's ~14,800 chunks    one spoken query
@@ -125,10 +125,10 @@ EMBEDDING_BACKEND = os.environ.get("LUC_EMBEDDING_BACKEND", "auto")
 # warning against. An unmeasured model is loudly flagged rather than silently defaulted - see
 # threshold_for().
 SIMILARITY_THRESHOLDS = {
-    # Measured via evaluate_retrieval.py on the real building directory (2026-08-12): 11/11
+    # Measured via evaluate_retrieval.py on the real building directory: 11/11
     # positive queries correctly matched, 0/5 negative (out-of-scope) queries falsely matched.
     "all-MiniLM-L6-v2": 0.35,
-    # Measured via evaluate_retrieval.py (2026-09-04): 11/11 positive queries correctly matched,
+    # Measured via evaluate_retrieval.py: 11/11 positive queries correctly matched,
     # 0/5 negatives falsely matched, with a clean band from 0.650 to 0.700 - real margin either
     # side rather than a knife-edge.
     #
@@ -214,7 +214,7 @@ class SentenceTransformerBackend:
 
 
 class OnnxMiniLMBackend:
-    """all-MiniLM-L6-v2 run through onnxruntime instead of PyTorch (added 2026-10-27).
+    """all-MiniLM-L6-v2 run through onnxruntime instead of PyTorch.
 
     Same model, same tokenizer, same mean pooling and normalization as sentence-transformers -
     measured identical on 300 real chunks from kb_cache.npz (cosine 1.00000, min and mean). That
@@ -311,7 +311,7 @@ class OllamaEmbeddingBackend:
         print(f"Using Ollama embeddings: {self.name}")
 
     # Hard cap on how many texts go into ONE /api/embed request, regardless of what the caller
-    # asks for. Found the hard way (2026-09-04): upsert_many()'s batch_size defaults to 256 -
+    # asks for. Found the hard way: upsert_many()'s batch_size defaults to 256 -
     # a sensible number for an in-process transformer, where a "batch" is just a bigger tensor -
     # and passing that straight through killed Ollama's model runner subprocess mid-scrape:
     #
@@ -506,7 +506,7 @@ class KnowledgeBase:
         return len(self._chunks)
 
     # --- persistence ---------------------------------------------------------------------
-    # Added 2026-08-19. Before this, every single launch of main_live.py re-scraped 87
+    # Before this, every single launch of main_live.py re-scraped 87
     # lincoln.edu.my pages (rate-limited, ~a minute of network) and then re-embedded all ~14,800
     # resulting chunks from scratch, purely to rebuild a knowledge base identical to the previous
     # run's. Saving it means a normal startup reloads precomputed vectors from disk instead.
@@ -616,7 +616,7 @@ class KnowledgeBase:
           ranking_score  - raw + the chunk's own `boost`. This is what decides ORDER among
                            chunks that already cleared the bar.
 
-        Keeping boost out of the threshold comparison (changed 2026-09-04) fixes a real
+        Keeping boost out of the threshold comparison fixes a real
         contradiction: KnowledgeChunk.boost documents itself as "a ranking nudge only, not a
         substitute for real relevance", but folding it into the thresholded score meant a
         boosted chunk needed less genuine similarity than an unboosted one to be considered
@@ -716,7 +716,7 @@ if __name__ == "__main__":
     )
     all_ok &= _check("out-of-scope question returns no match", no_match == [])
 
-    # --- save/load round trip (2026-08-19) --------------------------------------------------
+    # --- save/load round trip --------------------------------------------------
     # The cache exists to skip a ~1 minute scrape-and-embed on every launch, which means a subtly
     # wrong cache would be served silently for up to 24h - worth proving it actually round-trips
     # rather than assuming it. Checks the parts that would fail quietly: that every field

@@ -51,8 +51,8 @@ import requests
 from bs4 import BeautifulSoup
 
 USER_AGENT = (
-    "LUC-Robot-Scraper/1.0 (Lincoln University College reception robot data pipeline; "
-    "contact: front desk IT)"
+    "AI-Reception-Robot-Scraper/1.0 (university reception robot; "
+    "+https://github.com/DevByError/AI-Reception-Robot)"
 )
 REQUEST_TIMEOUT_S = 15
 REQUEST_DELAY_S = 1.0  # polite delay between requests - robots.txt has no Crawl-delay, but

@@ -1,5 +1,5 @@
 """
-Stage 08 - who is actually coming to talk to the robot. Added 2026-10-27.
+Stage 08 - who is actually coming to talk to the robot.
 
 Before this, anybody the camera saw for ~2.5 seconds was greeted - including people walking
 past, people queueing behind somebody else, and people standing across the lobby. A real

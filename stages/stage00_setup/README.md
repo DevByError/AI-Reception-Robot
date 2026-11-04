@@ -6,7 +6,7 @@ So this project's libraries (pinned versions) never conflict with any other Pyth
 the same machine, and don't depend on device-wide installed libraries. Anyone running this
 project — a dev machine or the real kiosk device — gets **the exact same versions**.
 
-**One venv at the project root** (`E:\LUC-Robot\.venv`), and you add each stage's libraries to it
+**One venv at the project root** (`E:\AI-Reception-Robot\.venv`), and you add each stage's libraries to it
 as you reach that stage — not a separate venv per stage, since later modules (Stage 08) need to
 import from every stage together.
 
@@ -15,7 +15,7 @@ import from every stage together.
 ### Windows (PowerShell) — the current dev machine
 
 ```powershell
-cd E:\LUC-Robot
+cd E:\AI-Reception-Robot
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -27,7 +27,7 @@ Or just run the ready-made script: `.\stages\stage00_setup\setup.ps1`
 ### Linux / Jetson — the actual deployment device at the kiosk
 
 ```bash
-cd ~/LUC-Robot
+cd ~/AI-Reception-Robot
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip

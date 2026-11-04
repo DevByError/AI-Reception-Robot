@@ -161,7 +161,7 @@ class MouthActivityDetector:
         self.speaking_threshold = speaking_threshold
         self._tracked: list[_TrackedFace] = []
         self._next_id = 0
-        # Crop mode (added 2026-10-27) - see update_faces(). A separate single-face mesh in
+        # Crop mode - see update_faces(). A separate single-face mesh in
         # static mode, because each call sees a different crop.
         self._crop_mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=True, max_num_faces=1, refine_landmarks=True,
@@ -176,7 +176,7 @@ class MouthActivityDetector:
 
     def update_faces(self, frame: np.ndarray,
                      faces: list[tuple[int, tuple[int, int, int, int]]]) -> list[MouthActivity]:
-        """Mouth activity for faces that ANOTHER detector already found (added 2026-10-27).
+        """Mouth activity for faces that ANOTHER detector already found.
 
         faces: (track_id, (x, y, w, h)) pairs, e.g. from stage01's face_presence.py. Each face is
         cropped (with margin) and the mesh runs on the crop.

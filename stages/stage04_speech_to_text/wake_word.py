@@ -1,5 +1,5 @@
 """
-Stage 04 - an always-on wake word detector (optional). Added 2026-10-27.
+Stage 04 - an always-on wake word detector (optional).
 
 WAKE_WORD_ENGINE=text (the default) needs nothing extra: the robot's name is looked for in what
 Whisper heard (stage08's addressee.py), which works during a conversation and costs nothing.

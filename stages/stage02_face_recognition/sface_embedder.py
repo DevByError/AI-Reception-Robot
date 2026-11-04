@@ -25,7 +25,7 @@ RECOGNITION_MODEL = MODELS_DIR / "face_recognition_sface_2021dec.onnx"
 COSINE_MATCH_THRESHOLD = 0.363
 DETECTION_SCORE_THRESHOLD = 0.7  # YuNet's own confidence threshold for "this is a face"
 
-# --- face quality gating (2026-09-05) ----------------------------------------------------------
+# --- face quality gating ----------------------------------------------------------
 # Not every detected face is worth recognizing FROM. A face 30 pixels wide at the far end of a
 # lobby, or motion-blurred as somebody walks past, still produces a perfectly well-formed 128-d
 # embedding - it is just an embedding of mush, and nothing downstream can tell the difference.
@@ -140,7 +140,7 @@ class SFaceEmbedder:
 
     def describe_faces(self, frame, faces) -> list[FaceDetection]:
         """Embeddings for faces ANOTHER detector already found - (bbox, landmarks, score)
-        tuples in full-frame pixels, e.g. from stage01's face_presence.py. Added 2026-10-27.
+        tuples in full-frame pixels, e.g. from stage01's face_presence.py.
 
         Skips this class's own YuNet pass, which at 1280x720 measured ~146ms - the single most
         expensive step left in the camera loop once YOLO was gone, and pure duplication when
@@ -282,5 +282,9 @@ if __name__ == "__main__":
           "higher bar, and reports why.")
 
     print("\nLoading YuNet + SFace models...")
-    embedder = SFaceEmbedder()
+    try:
+        embedder = SFaceEmbedder()
+    except FileNotFoundError as exc:
+        print(f"SKIPPED: {exc}")
+        raise SystemExit(1) from None
     print("OK: models loaded successfully. Run face_memory_live.py for the full webcam demo.")

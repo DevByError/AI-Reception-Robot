@@ -1,4 +1,4 @@
-# Installing LUC-Robot
+# Installing AI-Reception-Robot
 
 From an empty machine to a talking robot. Every step is one-time unless it says otherwise.
 

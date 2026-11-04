@@ -7,7 +7,7 @@ floor a department or service is on (floor-only — no step-by-step directions; 
 enough). University data (departments, staff, events...) is pulled automatically and periodically
 from the university's public website, with no manual intervention.
 
-## The concept (confirmed with the user)
+## The concept
 
 - **Hardware**: a fixed point (camera + microphone + speaker + Mini PC/Jetson), no locomotion.
   The interface is either an animated robot face on a small screen or a physical animatronic
@@ -93,7 +93,7 @@ python stages/stage01_presence_detection/presence_detector.py
 
 The `*_live.py` file beside it is that same stage against real hardware.
 
-## How it holds a conversation (2026-10-27)
+## How it holds a conversation
 
 - **Who to talk to**: it greets people who stop near it and look at it for a second, not
   passers-by. It answers the person facing it whose lips are moving, or anyone who says its

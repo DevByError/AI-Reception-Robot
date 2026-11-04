@@ -456,7 +456,7 @@ if __name__ == "__main__":
     print("\nOK: persistence mirroring behaves correctly (loading, write-through, throttling, "
           "and degrading safely when the database is down).")
 
-    # --- best match, not first match (2026-09-05) -----------------------------------------
+    # --- best match, not first match -----------------------------------------
     # The bug this replaces: find_match() walked the records in insertion order and returned
     # whoever cleared the threshold FIRST. With one person enrolled that is indistinguishable
     # from correct; with several it silently becomes "greet whoever enrolled earliest and is

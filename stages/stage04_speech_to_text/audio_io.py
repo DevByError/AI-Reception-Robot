@@ -148,7 +148,7 @@ class EchoCanceller:
     on the microphone thread.
 
     The speaker side should be CONTINUOUS - silence included - which is what stage06's
-    AudioPlayer does whenever a canceller is attached (2026-10-27): the alignment then never
+    AudioPlayer does whenever a canceller is attached: the alignment then never
     changes, and that matters more than anything else here, because AEC3's learned filter is
     only valid for one alignment. A shift of even a few milliseconds between sentences made it
     leak the start of every sentence (measured in the end-to-end test).

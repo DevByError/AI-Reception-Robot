@@ -8,8 +8,8 @@ Both start the robot with its face full screen and no camera debug window, and r
 
 - **Windows**: `start_robot.bat`. Put a shortcut to it in the Startup folder (Win+R,
   `shell:startup`) so it starts when the robot's computer logs in.
-- **Linux / Jetson**: `luc-robot.service`, a systemd user service. Install steps are at the top
-  of the file; the log is `journalctl --user -u luc-robot -f`.
+- **Linux / Jetson**: `ai-reception-robot.service`, a systemd user service. Install steps are at the top
+  of the file; the log is `journalctl --user -u ai-reception-robot -f`.
 
 For a robot with no screen at all, set `HEADLESS=true` (no windows; stop it with Ctrl+C or by
 stopping the service).

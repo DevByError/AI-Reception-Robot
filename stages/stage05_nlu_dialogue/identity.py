@@ -8,7 +8,7 @@ plain string lookup plus rule-based phrase matching, so dialogue_manager.py chec
 touching the knowledge base or any network call at all (see handle_question()) - no embeddings,
 no API key, nothing that can fail or be slow.
 
---- WHERE THE VALUES COME FROM (changed 2026-09-04) -----------------------------------------
+--- WHERE THE VALUES COME FROM -----------------------------------------
 The facts below used to be module constants edited in this file. They now live in MySQL, in the
 `robot_identity` table (Stage 02's robot_db.py owns the schema) - one field/value row each - so
 renaming the robot or correcting an email is an UPDATE in Workbench, not a code change and a
@@ -91,7 +91,7 @@ class Identity:
 # cache yet). Once a row exists, seeding never overwrites it, so editing these has no effect on
 # a database that has already been seeded - change those values in MySQL, per the docstring.
 SEED_IDENTITY = Identity(
-    robot_name="Lina",
+    robot_name="Nova",
     creator_name="Alex Tan",
     creator_email="creator@example.com",
     creator_nationality="Malaysian",

@@ -14,13 +14,13 @@
 # This file just documents that dependency chain in one place - there's nothing to pip install
 # from this file directly (no install command needed here beyond the seven above).
 #
-# NOTE (2026-08-19): active speaker detection added mediapipe to stage02's requirements.txt, so
+# NOTE: active speaker detection added mediapipe to stage02's requirements.txt, so
 # if you installed these before that date, re-run the stage02 line above. main_live.py starts
 # fine without it - it prints a warning and falls back to not distinguishing between multiple
 # simultaneous speakers - so a missing mediapipe shows up as "the robot answers the wrong person
 # in a group" rather than as a crash.
 #
-# NOTE (2026-09-04): persistent memory added mysql-connector-python to stage02's
+# NOTE: persistent memory added mysql-connector-python to stage02's
 # requirements.txt, so if you installed these before that date, re-run the stage02 line above
 # and follow "Set up the database" in stages/stage02_face_recognition/README.md. Same
 # degradation shape as mediapipe: main_live.py starts fine without a reachable database, it just
