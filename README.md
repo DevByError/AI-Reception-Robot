@@ -46,16 +46,21 @@ others can be added later.
 
 ## Hardware
 
+The project was developed on a Windows laptop with an NVIDIA GTX 1650 4 GB, its built-in Realtek
+microphone array and a USB webcam. The table below is the recommended build for a deployed robot.
+Items marked "recommended" have not yet been tested with this code.
+
 | Component | Model | Purpose |
 |---|---|---|
-| Main computer | Windows laptop for development; NVIDIA Jetson planned for deployment (model TBD) | Runs every stage |
-| GPU (optional) | NVIDIA GTX 1650 4 GB (development laptop) | Runs Whisper with CUDA; everything else runs on the CPU |
-| Camera | USB webcam (model TBD), device index 0, captured at 1280x720 | Presence detection, face recognition, lip movement |
-| Microphone | Realtek microphone array (development laptop); USB microphone or array for deployment (model TBD) | Speech input; select with `MIC_DEVICE` |
-| Speaker | TBD | Speech output; select with `SPEAKER_DEVICE` |
-| Display | Small screen (model TBD), optional | Animated face (`FACE_DISPLAY`, `FACE_FULLSCREEN`); use `HEADLESS=true` without one |
+| Main computer | Mini PC with an x86-64 CPU (Intel Core i5/i7 or AMD Ryzen 5/7), 16 GB RAM, 512 GB SSD, Windows 11 or Ubuntu 22.04 (recommended) | Runs every stage |
+| GPU | NVIDIA GeForce RTX 3050 / 4060 with 8 GB VRAM, CUDA 12 (recommended); GTX 1650 4 GB tested | Runs Whisper with CUDA; everything else runs on the CPU |
+| Camera | Logitech C920 HD Pro, 1080p USB (recommended); any USB webcam works | Presence detection, face recognition, lip movement; opened as device 0 at 1280x720 |
+| Microphone | Seeed ReSpeaker USB Mic Array v2.0 (recommended) | Speech input from a few metres away; select with `MIC_DEVICE` |
+| Speaker | Creative Pebble V3 or similar powered USB speaker (recommended) | Speech output; select with `SPEAKER_DEVICE`; keep it away from the microphone |
+| Display | 10.1 inch HDMI IPS monitor (recommended), optional | Animated face (`FACE_DISPLAY`, `FACE_FULLSCREEN`); use `HEADLESS=true` without one |
+| Jetson | NVIDIA Jetson Orin Nano 8 GB (planned) | Alternative main computer; needs NVIDIA's own PyTorch and CTranslate2 builds, untested |
 | Animatronic head | Planned | Alternative to the on-screen face; not supported in code yet |
-| Enclosure, power, other sensors | TBD | Not part of the software yet |
+| Enclosure and power | Custom enclosure with a single mains power strip (planned) | Not part of the software |
 
 Minimum and recommended specs:
 
@@ -264,7 +269,7 @@ it.
 
 ## Roadmap
 
-- Choose and document the deployment hardware (computer, camera, microphone, speaker, enclosure).
+- Test the recommended hardware and record the results in docs/RESULTS.md.
 - Make the camera index configurable instead of fixed at 0.
 - Animatronic head as an alternative to the on-screen face.
 - Arabic and Chinese speech and answers.
