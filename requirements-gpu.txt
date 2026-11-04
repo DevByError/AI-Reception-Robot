@@ -1,4 +1,4 @@
-# Speech recognition on an NVIDIA GPU (for example the GTX 1650) - optional.
+# Optional: run Whisper speech recognition on an NVIDIA GPU (tested on a GTX 1650 4GB).
 #
 #     pip install -r requirements-gpu.txt        (after requirements.txt or requirements-lite.txt)
 #
