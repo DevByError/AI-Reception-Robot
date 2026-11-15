@@ -11,7 +11,7 @@
 
 # --- base ---
 sounddevice==0.4.6
-numpy==1.26.4
+numpy==1.26.4         # if you are using a new python version you will need to upgrade the numpy version 
 
 # --- seeing ---
 opencv-contrib-python==4.9.0.80
