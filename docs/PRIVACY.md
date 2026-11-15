@@ -1,19 +1,19 @@
 # Privacy & Consent Policy (Face Data)
 
-A system that stores students' faces and names is a **biometric data system** — it needs clear
+A system that stores students' faces and names is a **biometric data system**. It needs clear
 guardrails from day one, not as an afterthought.
 
 ## Core rules
 
 1. **No storage without explicit consent**: the first time an unknown face is detected, the
    robot asks in plain terms ("Would you like me to remember you for next time?") before storing
-   anything. A decline means no embedding is stored — that visit stays anonymous.
+   anything. A decline means no embedding is stored, so that visit stays anonymous.
 2. **Minimum necessary data**: only store (the name as given by the student, the face embedding,
    first/last visit date, visit count). No raw images are kept after the embedding is extracted.
-   Conversation transcripts (rule 7) and a few short remembered facts (rule 8) are also stored —
+   Conversation transcripts (rule 7) and a few short remembered facts (rule 8) are also stored:
    nothing else.
 3. **Retention period**: any student's data is deleted automatically if they haven't visited the
-   kiosk within a set period (e.g. one full semester) — an auto-expiry policy, not a manual one.
+   kiosk within a set period (e.g. one full semester). It is an auto-expiry policy, not a manual one.
 4. **Right to be forgotten**: there must be a way (even a simple voice request like "forget me")
    to delete a person's data on request.
 5. **Local storage**: the face database stays local on the robot's device; it is never uploaded
@@ -26,7 +26,7 @@ guardrails from day one, not as an afterthought.
    afterwards. Two rules make this defensible rather than surveillance:
    - A transcript is only **linked to a named person** if that person consented to being
      remembered. A visitor who declined (or was never asked) still has their visit recorded, but
-     with no identity attached to it — see the nullable `conversations.person_id` column.
+     with no identity attached to it (see the nullable `conversations.person_id` column).
    - Deleting a person deletes **their transcripts too**, automatically. This is enforced in the
      schema by `ON DELETE CASCADE`, not by remembering to run a second query, so both rule 3
      (retention) and rule 4 (right to be forgotten) cover conversations without any extra step.
@@ -34,8 +34,8 @@ guardrails from day one, not as an afterthought.
    The kiosk notice (rule 6) must say that conversations are recorded, not only that there's a
    camera. This is the one part of this policy a student cannot infer from looking at the robot.
 8. **Remembered facts**: at the end of a visit the robot extracts a handful of
-   short notes about the student — what they were asking about, anything worth knowing next time
-   — and stores them in `person_facts`, so a returning visitor can be greeted with "did you get
+   short notes about the student (what they were asking about, anything worth knowing next time)
+   and stores them in `person_facts`, so a returning visitor can be greeted with "did you get
    anywhere with the Master of Computer Science?" rather than only being identified.
 
    These are **more sensitive than the face embeddings**, not less, and should be treated that
@@ -43,7 +43,7 @@ guardrails from day one, not as an afterthought.
    whereas these are readable English sentences about a named student. Four constraints, each
    enforced in code rather than left to a caller:
    - **Consent-gated by construction.** A fact can only be attached to a `person_id`, and a
-     visitor who declined to be remembered has none — so there is nowhere to put one. It is not
+     visitor who declined to be remembered has none, so there is nowhere to put one. It is not
      a check that can be forgotten.
    - **Bounded categories.** The extraction prompt explicitly refuses health or disability,
      religion, money problems, grades or exam results, immigration/visa status, anything about a
@@ -53,7 +53,7 @@ guardrails from day one, not as an afterthought.
      so a student disputing something the robot "remembers" can be shown what was actually said.
    - **Deleted with the person**, via the same `ON DELETE CASCADE` as everything else, so rules
      3 and 4 cover them with no extra step. `delete_person_facts()` also exists for the narrower
-     request — "forget what you know about me, but I still want to be recognised".
+     request: "forget what you know about me, but I still want to be recognised".
 
    A student asking what the robot remembers about them should be answered from `person_facts`,
    not by reading their transcripts aloud. That is the whole point of the table.
@@ -67,7 +67,7 @@ guardrails from day one, not as an afterthought.
 
 ## Where the data actually lives
 
-A MySQL database (default name `ai_reception_robot`), six tables — `robot_identity`, `people`,
+A MySQL database (default name `ai_reception_robot`), six tables: `robot_identity`, `people`,
 `face_embeddings`, `conversations`, `utterances`, `person_facts`. Only the last five hold
 anything about a visitor; `robot_identity` is the robot's own name and its creator's contact
 details, which is configuration rather than personal data collected from anybody. Schema and
@@ -115,7 +115,7 @@ DELETE FROM person_facts WHERE person_id = '...';
 DELETE FROM people WHERE person_id = '...';
 ```
 
-This file is reference-only — the technical implementation of the consent flag and the
+This file is reference-only. The technical implementation of the consent flag and the
 auto-expiry policy lives in `stages/stage02_face_recognition/face_memory.py`, and the storage
 and cascade-delete behaviour in `stages/stage02_face_recognition/robot_db.py`.
 

@@ -5,7 +5,7 @@ Every step is one-time unless it says otherwise.
 
 Two things to know before you start:
 
-- **One virtual environment at the project root** (`.venv/`), shared by all ten stages — not one
+- **One virtual environment at the project root** (`.venv/`), shared by all ten stages, rather than one
   per stage. Stage 08 imports from every other stage at once, so they have to live together.
 - **Nothing large is in this repository.** Model weights, the knowledge-base cache and
   your `.env` are all gitignored on purpose. Steps 4–6 below fetch them; each is a single
@@ -17,14 +17,14 @@ Two things to know before you start:
 
 | | Version / note |
 |---|---|
-| **Python** | 3.10 (developed and tested on 3.10.11). 3.11–3.12 should work; **3.13+ is not supported yet** — `mediapipe==0.10.18` publishes no wheel for it. |
+| **Python** | 3.10 (developed and tested on 3.10.11). 3.11–3.12 should work; **3.13+ is not supported yet** because `mediapipe==0.10.18` publishes no wheel for it. |
 | **Git** | any recent version |
-| **MySQL Server** | 8.x — only needed for persistent memory (step 5). The robot runs without it, it just forgets everyone on exit. |
-| **Ollama** | optional but strongly recommended (step 6) — the local LLM the robot falls back to when the cloud API is down. |
+| **MySQL Server** | 8.x. Only needed for persistent memory (step 5). The robot runs without it; it just forgets everyone on exit. |
+| **Ollama** | optional but strongly recommended (step 6). It is the local LLM the robot falls back to when the cloud API is down. |
 | **Hardware** | a webcam, a microphone and a speaker. You can install and run most stages' self-tests without them. |
 | **Disk** | ~6GB: ~3.5GB of Python packages (torch dominates), ~170MB of models, ~2GB if you pull the Ollama chat model. |
 
-Check Python before anything else — if this prints 3.13 or higher, install 3.10 alongside it and
+Check Python before anything else. If this prints 3.13 or higher, install 3.10 alongside it and
 use that interpreter's full path in step 2:
 
 ```powershell
@@ -88,7 +88,7 @@ local scripts for your own user once:
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-### Activate it — every new terminal, forever
+### Activate it in every new terminal
 
 The setup script does **not** leave the venv active in your shell. You have to activate it at the
 start of every session, before running anything in this project:
@@ -118,7 +118,7 @@ With the venv **active**:
 pip install -r requirements.txt
 ```
 
-That is every stage in one go (~3.5GB, several minutes — torch is most of it). The per-stage
+That is every stage in one go (~3.5GB, several minutes; torch is most of it). The per-stage
 files are still there if you would rather install stage by stage as you work through the project:
 
 ```powershell
@@ -169,7 +169,7 @@ python stages\stage00_setup\test_hardware.py
 ```
 
 It prints pass/fail for the camera, microphone and speaker. Developing on a machine with no
-webcam plugged in? Failures there are fine at this point — what matters is that the imports do
+webcam plugged in? Failures there are fine at this point. What matters is that the imports do
 not crash.
 
 If the speaker test is silent, or you have several audio devices:
@@ -197,7 +197,7 @@ None of the models are in the repository. Whisper and the sentence-transformer a
 on their first run.
 
 **Face detection + recognition** (YuNet ~338KB, SFace ~37MB). This one **must** run from the
-stage folder — it saves next to itself:
+stage folder. It saves next to itself:
 
 ```powershell
 cd stages\stage02_face_recognition
@@ -213,14 +213,14 @@ python -m piper.download_voices en_US-amy-medium
 cd ..\..
 ```
 
-**Person detection** (YOLOv8n, ~6.5MB) — nothing to do. ultralytics downloads it automatically
+**Person detection** (YOLOv8n, ~6.5MB): nothing to do. ultralytics downloads it automatically
 the first time you run a stage that needs it, into whatever directory you launched from.
 
-**Speech-to-text** (faster-whisper `small.en`, ~500MB) — also automatic, on first run, cached in
+**Speech-to-text** (faster-whisper `small.en`, ~500MB): also automatic, on first run, cached in
 your user profile afterwards. Expect the first run of Stage 04 or Stage 08 to pause while it
 downloads.
 
-**Sentence embeddings** (~80MB from Hugging Face) — same story, downloaded and cached on the
+**Sentence embeddings** (~80MB from Hugging Face): same story, downloaded and cached on the
 first Stage 05 or Stage 08 run.
 
 ---
@@ -228,7 +228,7 @@ first Stage 05 or Stage 08 run.
 ## 5. Set up the database (persistent memory)
 
 This is what lets the robot still recognize a student after being closed and reopened. **Skip it
-and the robot still runs** — it says so at startup and forgets every face and conversation on
+and the robot still runs**. It says so at startup and forgets every face and conversation on
 exit.
 
 You do *not* create the database or the tables by hand; `robot_db.py` creates both.
@@ -245,7 +245,7 @@ You do *not* create the database or the tables by hand; `robot_db.py` creates bo
    nano .env
    ```
 
-   Set at minimum `LUC_DB_USER` and `LUC_DB_PASSWORD`. `.env` is gitignored — it holds a real
+   Set at minimum `LUC_DB_USER` and `LUC_DB_PASSWORD`. `.env` is gitignored because it holds a real
    password and must never be committed. `.env.example` is the committed template; keep it in
    sync when you add a setting.
 
@@ -258,7 +258,7 @@ You do *not* create the database or the tables by hand; `robot_db.py` creates bo
    python stages\stage02_face_recognition\robot_db.py
    ```
 
-   It prints the row count of each table. Add `--self-test` for a full round trip — a temporary
+   It prints the row count of each table. Add `--self-test` for a full round trip: a temporary
    person is written, read back, given a conversation, then deleted, confirming the privacy
    cascade removes their transcript along with them:
 
@@ -274,7 +274,7 @@ You do *not* create the database or the tables by hand; `robot_db.py` creates bo
 
 ---
 
-## 6. Install Ollama — the offline fallback brain
+## 6. Install Ollama: the offline fallback brain
 
 Also optional, also strongly recommended. Without it, a cloud API outage means the robot answers
 straight from the knowledge base with no LLM at all. Ollama is free, needs no API key, has no
@@ -286,7 +286,7 @@ ollama pull llama3.2:3b          # the chat model (~2GB)
 ```
 
 `nomic-embed-text` (~274MB) is only needed if you deliberately switch `LUC_EMBEDDING_BACKEND` to
-`ollama`. Do not — the default in-process sentence-transformers backend measured ~35× faster at
+`ollama`. Do not. The default in-process sentence-transformers backend measured ~35× faster at
 building the knowledge base, for identical retrieval quality.
 
 Ollama runs as a background service once installed. Check it end to end:
@@ -322,7 +322,7 @@ STT_CLOUD=groq
 ```
 
 At startup the log says `[stt] Groq whisper-large-v3 is ready` (or why not), and each question
-shows `[stt] Groq (whisper-large-v3, 640ms)`. A recording of every question is then sent to Groq —
+shows `[stt] Groq (whisper-large-v3, 640ms)`. A recording of every question is then sent to Groq;
 see [PRIVACY.md](PRIVACY.md).
 
 ---
@@ -335,7 +335,7 @@ Activate the venv first (step 2), then:
 python stages\stage08_orchestrator\main_live.py
 ```
 
-The first launch scrapes the university website and embeds about 14,800 chunks — that takes a few minutes. The
+The first launch scrapes the university website and embeds about 14,800 chunks, which takes a few minutes. The
 result is cached to disk with a 24-hour expiry, so every launch after that starts quickly. Force
 a fresh scrape any time with:
 
@@ -387,8 +387,8 @@ python stages\stage06_text_to_speech\tts_speaker_live.py
 
 ## 9. Freeze the exact environment (before deploying)
 
-Once everything works on the dev machine, snapshot every version actually installed — including
-transitive dependencies — so the kiosk device can be reproduced exactly:
+Once everything works on the dev machine, snapshot every version actually installed, including
+transitive dependencies, so the kiosk device can be reproduced exactly:
 
 ```powershell
 pip freeze > stages\stage00_setup\requirements.lock.txt

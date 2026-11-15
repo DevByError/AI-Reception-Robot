@@ -2,6 +2,11 @@
 
 ![Python 3.10](https://img.shields.io/badge/python-3.10-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![Whisper](https://img.shields.io/badge/STT-faster--whisper-412991)
+![LLM](https://img.shields.io/badge/LLM-Groq%20%7C%20Gemini%20%7C%20Ollama-0F766E)
+![RAG](https://img.shields.io/badge/RAG-MiniLM%20ONNX-F5B83D)
+![Vision](https://img.shields.io/badge/vision-YuNet%20%2B%20SFace-5C3EE8)
+![TTS](https://img.shields.io/badge/TTS-Kokoro%20%7C%20Piper-E34F26)
 
 A stationary reception robot for a university front desk. It notices people who stop in front of
 it, greets them by voice, listens to their questions and answers by voice. It can remember

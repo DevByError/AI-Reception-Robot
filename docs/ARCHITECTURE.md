@@ -75,7 +75,7 @@ flowchart TD
     I2 --> J2[Dialogue Manager automatically uses the updated version on the next request]
 ```
 
-**Important note**: the Knowledge Base is the same source the robot reads from and updates —
+**Important note**: the Knowledge Base is the same source the robot reads from and updates,
 there's no separate manual copy that someone needs to maintain; every update on the official
 university website is reflected automatically within, at most, the scheduling interval.
 
@@ -98,7 +98,7 @@ point of failure:
 **Generation** is a fallback chain, and it exists because of two real failures in this project:
 a Gemini 503 mid-answer and a 429 on the first question of a session.
 Each one ended with the robot reading a raw scraped page-title fragment aloud as though it were
-an answer. A local model can't 503, can't exhaust a free tier, and doesn't need the network — so
+an answer. A local model can't 503, can't exhaust a free tier, and doesn't need the network, so
 when the cloud call fails, the question is simply asked again locally. Cloud stays first because
 Gemini can search the live web, which matters for a smaller institution whose details a model's
 training data barely covers.
@@ -107,7 +107,7 @@ Every failover is logged with the backend's name. A chain that downgraded silent
 weak local answer indistinguishable from a strong cloud one when reading the log afterwards, and
 would hide the API problem the operator needs to fix.
 
-**Retrieval** is not a chain — the default embedding model already runs in-process and offline,
+**Retrieval** is not a chain; the default embedding model already runs in-process and offline,
 so there is nothing to fail over to. Ollama is offered there as an accuracy option
 (`nomic-embed-text` handles paraphrased questions better, and a spoken question is nearly always
 a paraphrase), not an availability one. Because a similarity threshold is only meaningful for
@@ -118,7 +118,7 @@ The two shortest paths bypass generation entirely and are the ones most question
 `identity.py` answers "who made you" from a string lookup, and a curated directory chunk marked
 `is_direct_answer` is already a finished spoken sentence, so it is spoken as-is. Neither needs
 any model at all. The identity strings themselves are read from MySQL (`robot_identity`) once at
-startup, never per question — the robot's own name is data, but a visitor must never wait on a
+startup, never per question; the robot's own name is data, but a visitor must never wait on a
 query to hear it, and a database outage falls back to a local cache rather than to a stale name
 baked into the source.
 
@@ -132,7 +132,7 @@ because "the robot's memory" could reasonably mean either:
 | Holds | What the university publishes | Who the robot has met, and what was said |
 | Source | Scraped automatically from the website | The people standing in front of it |
 | Storage | Vector store + on-disk `kb_cache.npz` | MySQL |
-| If lost | Rebuilds itself on the next scrape | Gone — students have to re-introduce themselves |
+| If lost | Rebuilds itself on the next scrape | Gone; students have to re-introduce themselves |
 
 The MySQL side, in five tables:
 
@@ -145,7 +145,7 @@ people ──┬── face_embeddings   (1..5 float32 vectors per person)
 Two things about the shape of this are deliberate:
 
 - **`conversations.person_id` is nullable.** A visitor who declined to be remembered still has
-  their visit recorded, just with no identity attached — the usage record survives without
+  their visit recorded, just with no identity attached; the usage record survives without
   costing anyone their privacy.
 - **Every foreign key is `ON DELETE CASCADE`.** Deleting a person deletes their embeddings,
   their conversations and their transcripts in one statement. That's what makes PRIVACY.md's
@@ -154,7 +154,7 @@ Two things about the shape of this are deliberate:
 
 Recognition itself does **not** query MySQL. The store is loaded into memory once at startup and
 compared there, several times a second; MySQL is the durable record, not the matching index.
-Writes go the other way — a new enrollment, a visit count, a spoken line — and every one of them
+Writes go the other way (a new enrollment, a visit count, a spoken line), and every one of them
 is best-effort: if the database is unreachable the robot still greets, listens and answers, and
 says loudly at startup that this session will be forgotten (Stage 09's graceful-degradation
 rule). See `robot_db.connect_or_none()`.
@@ -170,7 +170,7 @@ published there or requires high accuracy:
   separate stage or file. Deliberately floor-only, no rooms/elevators/step-by-step routes - see
   the note under section 1.
 
-## 5) Expression/Face Layer — decision deferred
+## 5) Expression/Face Layer: decision deferred
 
 Since it isn't decided yet whether it's an animated screen face or a physical animatronic head,
 it's designed as a single interface:
