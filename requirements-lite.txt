@@ -1,5 +1,6 @@
 # AI-Reception-Robot without PyTorch (about 2 GB smaller). Recommended for CPU-only machines.
 #
+# for better and accurate outcome I suggest using PyTorch
 #     pip install -r requirements-lite.txt
 #     python stages/stage00_setup/download_models.py
 #
