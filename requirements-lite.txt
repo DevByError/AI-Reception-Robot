@@ -7,7 +7,7 @@
 # finds people with the YuNet face detector), sentence-transformers (the knowledge base uses the
 # ONNX copy of the same MiniLM model), speaker diarization and the Stage 03 placeholder voice.
 # Everything else is the same as requirements.txt - keep the two in sync.
-
+# reg
 # --- base ---
 sounddevice==0.4.6
 numpy==1.26.4         # if you are using a new python version you will need to upgrade the numpy version 
